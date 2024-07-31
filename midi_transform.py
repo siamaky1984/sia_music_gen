@@ -84,6 +84,33 @@ class MusicTransformer(nn.Module):
         return self.fc_out(output)
 
 
+    def generate(self, start_seq, target_seq_length=1000):
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        gen_seq = torch.full((1,target_seq_length), -1, dtype=torch.long , device= device) 
+        # gen_seq =  torch.tensor(start_seq).unsqueeze(0).to(device)
+
+        print('gen size', gen_seq.size())
+        print('start_sq', start_seq.size())
+
+        num_primer = start_seq.size()[1]
+        print(num_primer)
+        gen_seq[..., :num_primer] = start_seq
+
+        cur_i = num_primer
+
+        while cur_i < target_seq_length:
+            with torch.no_grad():
+                pred = self.forward(gen_seq[..., :cur_i], gen_seq[..., :cur_i])
+            
+            # print('>>>', pred.size())
+
+            pred = pred[0, cur_i-1, :].argmax().unsqueeze(0)
+            # print('next token', pred)
+            gen_seq[..., cur_i] = pred
+            cur_i += 1
+
+        return gen_seq[:, :cur_i]
 
 # %% 
 
@@ -123,15 +150,15 @@ def train_transformer(model, dataloader, vocab_size):
 
 
 # %%
-def generate_music(model, start_seq, max_length=1000):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# def generate_music(model, start_seq, max_length=1000):
+#     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    model.eval()
-    with torch.no_grad():
-        current_seq = torch.tensor(start_seq).unsqueeze(0).to(device)
-        for _ in range(max_length - len(start_seq)):
-            output = model(current_seq, current_seq)
-            next_token = output[:, -1, :].argmax(dim=-1)
-            current_seq = torch.cat([current_seq, next_token.unsqueeze(0)], dim=1)
-        return current_seq.squeeze().cpu().numpy()
+#     model.eval()
+#     with torch.no_grad():
+#         current_seq = torch.tensor(start_seq).unsqueeze(0).to(device)
+#         for _ in range(max_length - len(start_seq)):
+#             output = model(current_seq, current_seq)
+#             next_token = output[:, -1, :].argmax(dim=-1)
+#             current_seq = torch.cat([current_seq, next_token.unsqueeze(0)], dim=1)
+#         return current_seq.squeeze().cpu().numpy()
 
