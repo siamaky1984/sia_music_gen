@@ -53,7 +53,7 @@ def events_to_sequence(events, time_step=0.025):
     for event in events:
         event_time, event_type, track_idx, pitch, velocity = event
         
-        # Add time shift if necessary
+        # # Add time shift if necessary
         time_diff = int((event_time - current_time) / time_step)
         if time_diff > 0:
             sequence.append(('time_shift', time_diff))
@@ -285,10 +285,18 @@ def extract_melody(midi_data):
 if __name__=='__main__':
 
     # Example usage
-    midi_data = load_midi('midi_dataset/bavarkon.mid')
+    input_midi_file ='midi_dataset/appenzel.mid'  #'midi_dataset/amadbahra.mid' #bavarkon.mid'
+    midi_data = load_midi(input_midi_file)
+
+    # ### play original song
+    # try:
+    #     play_midi(input_midi_file)
+    # except Exception as e:
+    #     print(f"Error during MIDI playback: {e}")
+    
 
     # plt.figure(figsize=(8, 4))
-    # plot_piano_roll(midi_data, 56, 70)
+    # plot_piano_roll(midi_data, 45, 90)
     # plt.show()
 
     # encoded_data = encode_midi(midi_data)
@@ -299,24 +307,26 @@ if __name__=='__main__':
     # tokens = tokenize_events(encoded_data, vocab)
     # print(tokens)
 
-    time_step=0.025
+    time_step=0.005
     events = encode_midi(midi_data, time_step)
     sequence = events_to_sequence(events, time_step)
     vocab = create_vocabulary(sequence)
     tokens = tokenize_sequence(sequence, vocab)
 
-    print('sequence >>>>' , sequence[:10] ) 
+    print('sequence >>>>' , sequence[:20] ) 
     # print(vocab[:,10])
-    print('tokens >>>>', tokens[:10] )
+    print('tokens >>>>', tokens[:20] )
     
 
     ### generate midi from tokens
     gen_midi_data = generate_and_play_midi(tokens, vocab, time_step=time_step)
 
+    temp_midi_file = 'gen_midi_dataset/'+ input_midi_file.split('/')[-1].split('.')[0]+'_gen.mid'
+    gen_midi_data.write(temp_midi_file)
 
     # Save MIDI to a temporary file
-    temp_midi_file = 'bavar_kon_gen.mid'
-    midi_data.write(temp_midi_file)
+    #temp_midi_file = './gen_midi_dataset/appenzel.mid'
+    #midi_data.write(temp_midi_file)
 
     # # Play the MIDI
     try:
