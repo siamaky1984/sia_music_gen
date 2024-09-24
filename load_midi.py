@@ -288,16 +288,16 @@ if __name__=='__main__':
     input_midi_file ='midi_dataset/appenzel.mid'  #'midi_dataset/amadbahra.mid' #bavarkon.mid'
     midi_data = load_midi(input_midi_file)
 
-    # ### play original song
+    plt.figure(figsize=(8, 4))
+    plot_piano_roll(midi_data, 45, 90)
+    plt.show()
+
+    # # ### play original song
     # try:
     #     play_midi(input_midi_file)
     # except Exception as e:
     #     print(f"Error during MIDI playback: {e}")
-    
 
-    # plt.figure(figsize=(8, 4))
-    # plot_piano_roll(midi_data, 45, 90)
-    # plt.show()
 
     # encoded_data = encode_midi(midi_data)
     # print('encoded_Data', encoded_data)
