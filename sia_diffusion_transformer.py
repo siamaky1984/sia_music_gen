@@ -151,26 +151,6 @@ class DiffusionModel:
         
         return x
 
-def sequence_to_midi(sequence, output_file):
-    mid = MidiFile()
-    track = MidiTrack()
-    mid.tracks.append(track)
-    
-    current_time = 0
-    for event in sequence:
-        event_type, value = event
-        event_type = int(round(event_type))  # Round to nearest integer
-        if event_type == 2:  # Time shift
-            current_time += value * MAX_TIME  # Convert back from normalized time
-        else:
-            msg_type = 'note_on' if event_type == 0 else 'note_off'
-            note = int(value * PITCH_RANGE)  # Convert back from normalized pitch
-            track.append(Message(msg_type, note=note, velocity=64, time=int(current_time * mid.ticks_per_beat)))
-            current_time = 0
-    
-    mid.save(output_file)
-
-
 
 # Usage example
 midi_folder = '../Midi_dataset/piano_maestro-v2.0.0/2004/'
@@ -183,7 +163,7 @@ diffusion = DiffusionModel(model)
 
 # Training loop
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
-num_epochs = 100
+num_epochs = 3
 
 for epoch in range(num_epochs):
     print('epoch', epoch)
@@ -192,12 +172,12 @@ for epoch in range(num_epochs):
         optimizer.zero_grad()
         t = torch.randint(0, 1000, (batch.size(0),), device=device)
         
-        print(batch.shape, t.shape)
+        # print(batch.shape, t.shape)
         noisy_batch, noise = diffusion.add_noise(batch, t)
-        print('>>>', noisy_batch.shape, t.shape, noise.shape)
+        # print('>>>', noisy_batch.shape, t.shape, noise.shape)
 
         predicted_noise = model(noisy_batch, t)
-        print(predicted_noise.shape, noise.shape)
+        # print(predicted_noise.shape, noise.shape)
         
         loss = F.mse_loss(predicted_noise, noise)
 
@@ -217,27 +197,64 @@ torch.save({
 
 print("Model saved successfully.")
 
-# Inference
+
+
+def scale_to_midi_range(generated_sequence):
+    # Scale event types to integers
+    event_types = np.round(generated_sequence[:, 0]).astype(int)
+    
+    # Scale values based on event type
+    values = generated_sequence[:, 1]
+    scaled_values = np.zeros_like(values)
+    
+    for i, event_type in enumerate(event_types):
+        if event_type == 0 or event_type == 1:  # note on or note off
+            scaled_values[i] = np.clip(np.round(values[i] * PITCH_RANGE), 0, 127).astype(int)
+        elif event_type == 2:  # time shift
+            scaled_values[i] = values[i] * MAX_TIME
+    
+    return np.stack([event_types, scaled_values], axis=-1)
+
+def sequence_to_midi(sequence, output_file):
+    mid = MidiFile()
+    track = MidiTrack()
+    mid.tracks.append(track)
+    
+    current_time = 0
+    for event in sequence:
+        event_type, value = event
+        if event_type == 2:  # Time shift
+            current_time += value
+        else:
+            msg_type = 'note_on' if event_type == 0 else 'note_off'
+            note = int(value)
+            velocity = 64 if msg_type == 'note_on' else 0
+            track.append(Message(msg_type, note=note, velocity=velocity, time=int(current_time * mid.ticks_per_beat)))
+            current_time = 0
+    
+    mid.save(output_file)
+
 def generate_midi(model_path, output_file, seq_len=512):
-    # Load the model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = DiffusionTransformer().to(device)
     diffusion = DiffusionModel(model)
     
     checkpoint = torch.load(model_path, map_location=device)
     model.load_state_dict(checkpoint['model_state_dict'])
-    model.eval()  # Set the model to evaluation mode
+    model.eval()
     
     print("Model loaded successfully.")
     
-    # Generate new MIDI
     with torch.no_grad():
         generated = diffusion.sample((1, seq_len, 2))
     
     generated_sequence = generated[0].cpu().numpy()
-    sequence_to_midi(generated_sequence, output_file)
+    
+    # Scale the generated sequence to appropriate MIDI ranges
+    scaled_sequence = scale_to_midi_range(generated_sequence)
+    
+    sequence_to_midi(scaled_sequence, output_file)
     print(f"Generated MIDI saved to {output_file}")
 
 # Example usage of the inference function
 generate_midi('midi_diffusion_model.pth', 'generated_music.mid')
-
