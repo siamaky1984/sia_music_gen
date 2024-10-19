@@ -6,6 +6,8 @@ from mido import MidiFile, MidiTrack, Message
 import os
 from torch.utils.data import Dataset, DataLoader
 
+
+
 MAX_TIME = 2.0  # Maximum time between events in seconds
 MAX_VELOCITY = 127
 PITCH_RANGE = 128
@@ -60,6 +62,16 @@ class MIDIDataset(Dataset):
 
     def __getitem__(self, idx):
         return self.data[idx]
+
+
+def get_device():
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    elif torch.cuda.is_available():
+        return torch.device("cuda")
+    else:
+        return torch.device("cpu")
+
 
 
 class DiffusionTransformer(nn.Module):
@@ -117,6 +129,7 @@ class DiffusionTransformer(nn.Module):
         return emb
 
 
+
 class DiffusionModel:
     def __init__(self, model, beta_start=1e-4, beta_end=0.02, n_steps=1000):
         self.model = model
@@ -151,8 +164,10 @@ class DiffusionModel:
         return x
 
 
+
+
 def scale_to_midi_range(generated_sequence):
-    event_types = np.round(generated_sequence[:, 0]).astype(int)
+    event_types = np.clip(np.round(generated_sequence[:, 0]).astype(int), 0, EVENT_TYPES - 1)
     values = generated_sequence[:, 1]
     scaled_values = np.zeros_like(values)
     
@@ -160,60 +175,79 @@ def scale_to_midi_range(generated_sequence):
         if event_type == 0 or event_type == 1:  # note on or note off
             scaled_values[i] = np.clip(np.round(values[i] * PITCH_RANGE), 0, 127).astype(int)
         elif event_type == 2:  # time shift
-            scaled_values[i] = values[i] * MAX_TIME
+            scaled_values[i] = np.clip(values[i] * MAX_TIME, 0, MAX_TIME)
     
     return np.stack([event_types, scaled_values], axis=-1)
+
+
+def post_process_sequence(sequence):
+    processed = []
+    current_notes = set()
+    accumulated_time = 0
+    
+    for event in sequence:
+        event_type, value = event
+        event_type = int(event_type)
+        
+        if event_type == 2:  # time shift
+            accumulated_time += max(0, value)  # Ensure non-negative time
+        elif event_type == 0:  # note on
+            if value not in current_notes:
+                processed.append([event_type, int(value), accumulated_time])
+                current_notes.add(value)
+                accumulated_time = 0
+        elif event_type == 1:  # note off
+            if value in current_notes:
+                processed.append([event_type, int(value), accumulated_time])
+                current_notes.remove(value)
+                accumulated_time = 0
+    
+    # Ensure all notes are turned off at the end
+    for note in current_notes:
+        processed.append([1, int(note), 0])
+    
+    return processed
+
 
 def sequence_to_midi(sequence, output_file):
     mid = MidiFile()
     track = MidiTrack()
     mid.tracks.append(track)
     
-    current_time = 0
     for event in sequence:
-        event_type, value = event
-        if event_type == 2:  # Time shift
-            current_time += value
-        else:
-            msg_type = 'note_on' if event_type == 0 else 'note_off'
-            note = int(value)
-            velocity = 64 if msg_type == 'note_on' else 0
-            track.append(Message(msg_type, note=note, velocity=velocity, time=int(current_time * mid.ticks_per_beat)))
-            current_time = 0
+        event_type, note, time = event
+        msg_type = 'note_on' if event_type == 0 else 'note_off'
+        velocity = 64 if msg_type == 'note_on' else 0
+        
+        # Ensure time is non-negative and convert to ticks
+        ticks = max(0, int(time * mid.ticks_per_beat))
+        
+        track.append(Message(msg_type, note=note, velocity=velocity, time=ticks))
     
     mid.save(output_file)
 
-
-def generate_midi(model_path, output_file, seq_len=512, num_sequences=8, context_size=256):
+def generate_midi(model_path, output_file, seq_len=512, num_sequences=8):
     # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+    # device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
 
-    checkpoint = torch.load(model_path, map_location=device)
+    device = get_device()
 
-    # Extract the position embedding size from the checkpoint
-    pos_embed_size = checkpoint['model_state_dict']['position_embedding.weight'].size(0)
-    
-    model = DiffusionTransformer(max_seq_len=pos_embed_size).to(device)
+    model = DiffusionTransformer(max_seq_len=seq_len).to(device)
     diffusion = DiffusionModel(model)
     
-
+    checkpoint = torch.load(model_path, map_location=device)
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
     
     print("Model loaded successfully.")
     
     full_sequence = []
-    context = None
     with torch.no_grad():
-        for i in range(num_sequences):
+        for _ in range(num_sequences):
             generated = diffusion.sample((1, seq_len, 2))
             generated_sequence = generated[0].cpu().numpy()
             scaled_sequence = scale_to_midi_range(generated_sequence)
             full_sequence.append(scaled_sequence)
-            
-            # Update context for next iteration
-            if i < num_sequences - 1:  # No need to update context for the last iteration
-                context = torch.from_numpy(scaled_sequence[-context_size:]).float().unsqueeze(0).to(device)
     
     full_sequence = np.concatenate(full_sequence, axis=0)
     
@@ -224,82 +258,60 @@ def generate_midi(model_path, output_file, seq_len=512, num_sequences=8, context
     print(f"Generated MIDI saved to {output_file}")
 
 
-def post_process_sequence(sequence):
-    processed = []
-    current_notes = set()
-    
-    for event in sequence:
-        event_type, value = event
-        if event_type == 0:  # note on
-            if value not in current_notes:
-                processed.append(event)
-                current_notes.add(value)
-        elif event_type == 1:  # note off
-            if value in current_notes:
-                processed.append(event)
-                current_notes.remove(value)
-        else:  # time shift
-            processed.append(event)
-    
-    # Ensure all notes are turned off at the end
-    for note in current_notes:
-        processed.append([1, note])
-    
-    return np.array(processed)
 
+if __name__=='__main__':
+    mode = 'train' # 'inference' #'train'
 
-mode = 'inference' #'train'
+    if mode == 'train':
 
-if mode == 'train':
+        # Usage example
+        midi_folder = '../Midi_dataset/piano_maestro-v2.0.0/2004/'
+        dataset = MIDIDataset(midi_folder)
+        dataloader = DataLoader(dataset, batch_size=32, shuffle=True)
 
-    # Usage example
-    midi_folder = '../Midi_dataset/piano_maestro-v2.0.0/2004/'
-    dataset = MIDIDataset(midi_folder)
-    dataloader = DataLoader(dataset, batch_size=32, shuffle=True)
+        # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
 
-    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+        model = DiffusionTransformer().to(device)
+        diffusion = DiffusionModel(model)
 
-    model = DiffusionTransformer().to(device)
-    diffusion = DiffusionModel(model)
+        # Training loop
+        optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+        num_epochs = 2
 
-    # Training loop
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
-    num_epochs = 2
+        for epoch in range(num_epochs):
+            print('epoch', epoch)
+            for batch in dataloader:
+                batch = batch.to(device)
+                optimizer.zero_grad()
+                t = torch.randint(0, 1000, (batch.size(0),), device=device)
+                
+                # print(batch.shape, t.shape)
+                noisy_batch, noise = diffusion.add_noise(batch, t)
+                # print('>>>', noisy_batch.shape, t.shape, noise.shape)
 
-    for epoch in range(num_epochs):
-        print('epoch', epoch)
-        for batch in dataloader:
-            batch = batch.to(device)
-            optimizer.zero_grad()
-            t = torch.randint(0, 1000, (batch.size(0),), device=device)
+                predicted_noise = model(noisy_batch, t)
+                # print(predicted_noise.shape, noise.shape)
+                
+                loss = F.mse_loss(predicted_noise, noise)
+
+                loss.backward()
+                optimizer.step()
             
-            # print(batch.shape, t.shape)
-            noisy_batch, noise = diffusion.add_noise(batch, t)
-            # print('>>>', noisy_batch.shape, t.shape, noise.shape)
-
-            predicted_noise = model(noisy_batch, t)
-            # print(predicted_noise.shape, noise.shape)
-            
-            loss = F.mse_loss(predicted_noise, noise)
-
-            loss.backward()
-            optimizer.step()
-        
-        print(f"Epoch {epoch+1}/{num_epochs}, Loss: {loss.item()}")
+            print(f"Epoch {epoch+1}/{num_epochs}, Loss: {loss.item()}")
 
 
-    # Save the model after training
-    torch.save({
-        'model_state_dict': model.state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(),
-        'epoch': num_epochs,
-        'loss': loss.item(),
-    }, 'midi_diffusion_model.pth')
+        # Save the model after training
+        torch.save({
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'epoch': num_epochs,
+            'loss': loss.item(),
+        }, 'midi_diffusion_model.pth')
 
-    print("Model saved successfully.")
+        print("Model saved successfully.")
 
-elif mode =='inference':
+    elif mode =='inference':
 
-    # Example usage of the inference function
-    generate_midi('midi_diffusion_model.pth', 'generated_music.mid', seq_len=512, num_sequences=8, context_size=0)
+        # Example usage of the inference function
+        generate_midi('midi_diffusion_model.pth', 'generated_music.mid', seq_len=512, num_sequences=8 )
