@@ -158,7 +158,7 @@ if __name__=='__main__':
 
     if mode == 'play':
         # Example usage
-        input_midi_file ='midi_dataset/appenzel.mid'  #'midi_dataset/amadbahra.mid' #bavarkon.mid'
+        input_midi_file ='midi_dataset/vigen.mid'  #'midi_dataset/amadbahra.mid' #bavarkon.mid'
         midi_data = load_midi(input_midi_file)
         # midi_data = load_midi('midi_dataset/Lady_In_Red__Wrubel__Milne_1935_AB.mid')
 

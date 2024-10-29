@@ -6,7 +6,8 @@ from mido import MidiFile, MidiTrack, Message
 import os
 from torch.utils.data import Dataset, DataLoader
 
-
+# Split your dataset into train and validation
+from torch.utils.data import random_split
 
 MAX_TIME = 2.0  # Maximum time between events in seconds
 MAX_VELOCITY = 127
@@ -59,8 +60,15 @@ class MIDIDataset(Dataset):
 
     def __len__(self):
         return len(self.data)
+        # return len(self.data) * len(self.data[0])
 
     def __getitem__(self, idx):
+        # file_idx = idx // len(self.data[0])
+        # seq_idx = idx % len(self.data[0])
+        # print('file_idx', file_idx)
+        # print('seq_idx', seq_idx)
+
+        # return self.data[file_idx][seq_idx]
         return self.data[idx]
 
 
@@ -75,23 +83,31 @@ def get_device():
 
 
 class DiffusionTransformer(nn.Module):
-    def __init__(self, d_model=512, nhead=8, num_layers=6, dim_feedforward=2048, max_seq_len=512):
+    def __init__(self, d_model=512, nhead=8, num_layers=8, dim_feedforward=2048, max_seq_len=512, dropout=0.05):
         super().__init__()
         self.d_model = d_model
         self.event_type_embedding = nn.Embedding(EVENT_TYPES, d_model)
         self.value_projection = nn.Linear(1, d_model)
         self.position_embedding = nn.Embedding(max_seq_len, d_model)
         
+        # Add layer normalization for inputs
+        self.input_norm = nn.LayerNorm(d_model)
+
         encoder_layer = nn.TransformerEncoderLayer(
             d_model, 
             nhead, 
             dim_feedforward,
+            dropout=dropout,  # Add dropout
             batch_first=True,
             norm_first=True
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers)
         
-        self.fc_out = nn.Linear(d_model, 2)  # Output event type and value
+        # self.fc_out = nn.Linear(d_model, 2)  # Output event type and value
+        # Add more layers for output processing
+        self.fc_hidden = nn.Linear(d_model, d_model // 2)
+        self.fc_out = nn.Linear(d_model // 2, 2)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x, t):
         batch_size, seq_len, _ = x.shape
@@ -115,8 +131,13 @@ class DiffusionTransformer(nn.Module):
         x = nn.Linear(x.size(-1), self.d_model, device=x.device)(x)
         
         x = self.transformer(x)
+
+        # Add more non-linearity in output layers
+        x = F.relu(self.fc_hidden(x))
+        x = self.dropout(x)
+        x = self.fc_out(x) 
         
-        return self.fc_out(x)
+        return x
 
     def get_timestep_embedding(self, timesteps, embedding_dim):
         half_dim = embedding_dim // 2
@@ -146,7 +167,7 @@ class DiffusionModel:
 
     @torch.no_grad()
     def sample(self, shape):
-        x = torch.randn(shape, device=self.device)
+        x = torch.randn(shape, device=self.device) * 0.3 ### scale for reduced noise
         for t in reversed(range(len(self.betas))):
             t_tensor = torch.full((shape[0],), t, dtype=torch.long, device=self.device)
             predicted_noise = self.model(x, t_tensor)
@@ -173,9 +194,15 @@ def scale_to_midi_range(generated_sequence):
     
     for i, event_type in enumerate(event_types):
         if event_type == 0 or event_type == 1:  # note on or note off
-            scaled_values[i] = np.clip(np.round(values[i] * PITCH_RANGE), 0, 127).astype(int)
+            scaled_values[i] = np.clip(np.round(values[i] * PITCH_RANGE + 64), 0, 127).astype(int)
         elif event_type == 2:  # time shift
             scaled_values[i] = np.clip(values[i] * MAX_TIME, 0, MAX_TIME)
+
+
+    # Diagnostic print
+    print(f"Scaled sequence shape: {scaled_values.shape}")
+    print(f"Event types: {np.unique(event_types, return_counts=True)}")
+    print(f"Value range: {scaled_values.min()} to {scaled_values.max()}")
     
     return np.stack([event_types, scaled_values], axis=-1)
 
@@ -192,11 +219,11 @@ def post_process_sequence(sequence):
         if event_type == 2:  # time shift
             accumulated_time += max(0, value)  # Ensure non-negative time
         elif event_type == 0:  # note on
-            if value not in current_notes:
+            if abs(value - int(value)) < 0.1: # value not in current_notes:
                 processed.append([event_type, int(value), accumulated_time])
                 current_notes.add(value)
                 accumulated_time = 0
-        elif event_type == 1:  # note off
+        elif abs(value - int(value)) < 0.1: # event_type == 1:  # note off
             if value in current_notes:
                 processed.append([event_type, int(value), accumulated_time])
                 current_notes.remove(value)
@@ -205,6 +232,13 @@ def post_process_sequence(sequence):
     # Ensure all notes are turned off at the end
     for note in current_notes:
         processed.append([1, int(note), 0])
+
+    # Diagnostic print
+    print(f"Processed sequence length: {len(processed)}")
+    if processed:
+        print(f"Sample of processed sequence: {processed[:5]}")
+    else:
+        print("Warning: No events in processed sequence")
     
     return processed
 
@@ -223,6 +257,10 @@ def sequence_to_midi(sequence, output_file):
         ticks = max(0, int(time * mid.ticks_per_beat))
         
         track.append(Message(msg_type, note=note, velocity=velocity, time=ticks))
+
+    # Diagnostic print
+    print(f"Total MIDI events: {len(track)}")
+    print(f"Sample of MIDI events: {track[:5]}")
     
     mid.save(output_file)
 
@@ -250,6 +288,8 @@ def generate_midi(model_path, output_file, seq_len=512, num_sequences=8):
             full_sequence.append(scaled_sequence)
     
     full_sequence = np.concatenate(full_sequence, axis=0)
+
+    print(np.shape(full_sequence))
     
     # Post-process the full sequence
     processed_sequence = post_process_sequence(full_sequence)
@@ -258,60 +298,152 @@ def generate_midi(model_path, output_file, seq_len=512, num_sequences=8):
     print(f"Generated MIDI saved to {output_file}")
 
 
+def train_model(model, diffusion, train_loader, val_loader, num_epochs, device):
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, verbose=True)
+    
+    best_loss = float('inf')
+    patience = 15
+    patience_counter = 0
+    
+    for epoch in range(num_epochs):
+        # Training phase
+        model.train()
+        train_loss = 0
+        for batch in train_loader:
+            batch = batch.to(device)
+            optimizer.zero_grad()
+            t = torch.randint(0, 1000, (batch.size(0),), device=device)
+            
+            noisy_batch, noise = diffusion.add_noise(batch, t)
+            predicted_noise = model(noisy_batch, t)
+            
+            loss = F.mse_loss(predicted_noise, noise)
+            loss.backward()
+            
+            # Gradient clipping
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            
+            optimizer.step()
+            train_loss += loss.item()
+        
+        avg_train_loss = train_loss / len(train_loader)
+        
+        # Validation phase
+        model.eval()
+        val_loss = 0
+        with torch.no_grad():
+            for batch in val_loader:
+                batch = batch.to(device)
+                t = torch.randint(0, 1000, (batch.size(0),), device=device)
+                
+                noisy_batch, noise = diffusion.add_noise(batch, t)
+                predicted_noise = model(noisy_batch, t)
+                
+                loss = F.mse_loss(predicted_noise, noise)
+                val_loss += loss.item()
+        
+        avg_val_loss = val_loss / len(val_loader)
+        
+        # Learning rate scheduling
+        scheduler.step(avg_val_loss)
+        
+        print(f"Epoch {epoch+1}/{num_epochs}")
+        print(f"Train Loss: {avg_train_loss:.4f}")
+        print(f"Val Loss: {avg_val_loss:.4f}")
+        
+        # Early stopping
+        if avg_val_loss < best_loss:
+            best_loss = avg_val_loss
+            patience_counter = 0
+            # Save best model
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'loss': best_loss,
+            }, 'best_midi_diffusion_model.pth')
+        else:
+            patience_counter += 1
+            if patience_counter >= patience:
+                print("Early stopping triggered")
+                break
+
+
+
+
 
 if __name__=='__main__':
-    mode = 'train' # 'inference' #'train'
+    mode =   'train'
 
     if mode == 'train':
 
         # Usage example
-        midi_folder = '../Midi_dataset/piano_maestro-v2.0.0/2004/'
+        midi_folder = './midi_dataset/piano_maestro-v1.0.0/all_years/'
         dataset = MIDIDataset(midi_folder)
         dataloader = DataLoader(dataset, batch_size=32, shuffle=True)
 
         # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+        # device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+        device = get_device()
 
         model = DiffusionTransformer().to(device)
         diffusion = DiffusionModel(model)
 
-        # Training loop
-        optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
-        num_epochs = 2
+        dataset = MIDIDataset(midi_folder)
+        train_size = int(0.8 * len(dataset))
+        val_size = len(dataset) - train_size
+        train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
 
-        for epoch in range(num_epochs):
-            print('epoch', epoch)
-            for batch in dataloader:
-                batch = batch.to(device)
-                optimizer.zero_grad()
-                t = torch.randint(0, 1000, (batch.size(0),), device=device)
+        train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+        val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
+
+        # Train the model
+        train_model(model, diffusion, train_loader, val_loader, num_epochs=50, device=device)
+
+
+
+        # # Training loop
+        # optimizer = torch.optim.Adam(model.parameters(), lr=5e-4)
+        # num_epochs = 40
+
+        # for epoch in range(num_epochs):
+        #     print('epoch', epoch)
+        #     for batch in dataloader:
+        #         batch = batch.to(device)
+        #         optimizer.zero_grad()
+        #         t = torch.randint(0, 1000, (batch.size(0),), device=device)
                 
-                # print(batch.shape, t.shape)
-                noisy_batch, noise = diffusion.add_noise(batch, t)
-                # print('>>>', noisy_batch.shape, t.shape, noise.shape)
+        #         # print(batch.shape, t.shape)
+        #         noisy_batch, noise = diffusion.add_noise(batch, t)
+        #         # print('>>>', noisy_batch.shape, t.shape, noise.shape)
 
-                predicted_noise = model(noisy_batch, t)
-                # print(predicted_noise.shape, noise.shape)
+        #         predicted_noise = model(noisy_batch, t)
+        #         # print(predicted_noise.shape, noise.shape)
                 
-                loss = F.mse_loss(predicted_noise, noise)
+        #         loss = F.mse_loss(predicted_noise, noise)
 
-                loss.backward()
-                optimizer.step()
+        #         loss.backward()
+
+        #         # Gradient clipping
+        #         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
+        #         optimizer.step()
             
-            print(f"Epoch {epoch+1}/{num_epochs}, Loss: {loss.item()}")
+        #     print(f"Epoch {epoch+1}/{num_epochs}, Loss: {loss.item()}")
 
 
-        # Save the model after training
-        torch.save({
-            'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-            'epoch': num_epochs,
-            'loss': loss.item(),
-        }, 'midi_diffusion_model.pth')
+        # # Save the model after training
+        # torch.save({
+        #     'model_state_dict': model.state_dict(),
+        #     'optimizer_state_dict': optimizer.state_dict(),
+        #     'epoch': num_epochs,
+        #     'loss': loss.item(),
+        # }, 'midi_diffusion_model.pth')
 
-        print("Model saved successfully.")
+        # print("Model saved successfully.")
 
     elif mode =='inference':
 
         # Example usage of the inference function
-        generate_midi('midi_diffusion_model.pth', 'generated_music.mid', seq_len=512, num_sequences=8 )
+        generate_midi('midi_diffusion_model.pth', 'generated_music.mid', seq_len=512, num_sequences=16 )

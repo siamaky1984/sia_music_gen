@@ -283,9 +283,10 @@ def extract_melody(midi_data):
 # %%
 
 if __name__=='__main__':
-
+    
     # Example usage
-    input_midi_file ='midi_dataset/appenzel.mid'  #'midi_dataset/amadbahra.mid' #bavarkon.mid'
+    # input_midi_file = './midi_dataset/mond_1.mid' # generated_music.mid' #'midi_dataset/appenzel.mid'  #'midi_dataset/amadbahra.mid' #bavarkon.mid'
+    input_midi_file = './generated_sequence_attn.mid'
     midi_data = load_midi(input_midi_file)
 
     plt.figure(figsize=(8, 4))
@@ -293,10 +294,10 @@ if __name__=='__main__':
     plt.show()
 
     # # ### play original song
-    # try:
-    #     play_midi(input_midi_file)
-    # except Exception as e:
-    #     print(f"Error during MIDI playback: {e}")
+    try:
+        play_midi(input_midi_file)
+    except Exception as e:
+        print(f"Error during MIDI playback: {e}")
 
 
     # encoded_data = encode_midi(midi_data)
@@ -307,7 +308,7 @@ if __name__=='__main__':
     # tokens = tokenize_events(encoded_data, vocab)
     # print(tokens)
 
-    time_step=0.005
+    time_step=0.05
     events = encode_midi(midi_data, time_step)
     sequence = events_to_sequence(events, time_step)
     vocab = create_vocabulary(sequence)
