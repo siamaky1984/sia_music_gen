@@ -520,7 +520,7 @@ def main():
     train_params = {
         'batch_size': 8,      # Reduced batch size
         'accumulation_steps': 4,
-        'num_epochs': 2,
+        'num_epochs': 10,
         'learning_rate': 0.001
     }
 
@@ -608,7 +608,7 @@ def main():
         
         # Create a simple seed sequence
         # Option 1: Create a random seed
-        seed_sequence = [random.randint(0, processor.vocab_size-1) for _ in range(sequence_length_gen)]
+        # seed_sequence = [random.randint(0, processor.vocab_size-1) for _ in range(sequence_length_gen)]
         
         # Option 2: If you have a MIDI file to use as seed
         midi_seed_file = "./midi_dataset/mond_1.mid"
@@ -620,7 +620,7 @@ def main():
             generated_indices, attention_maps = trainer.generate(
                 seed_sequence,
                 length=200,
-                temperature=0.8
+                temperature=2
             )
 
             # Save attention maps

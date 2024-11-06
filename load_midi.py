@@ -286,7 +286,7 @@ if __name__=='__main__':
     
     # Example usage
     # input_midi_file = './midi_dataset/mond_1.mid' # generated_music.mid' #'midi_dataset/appenzel.mid'  #'midi_dataset/amadbahra.mid' #bavarkon.mid'
-    input_midi_file = './generated_sequence_attn.mid'
+    input_midi_file = './generated_sequence.mid'
     midi_data = load_midi(input_midi_file)
 
     plt.figure(figsize=(8, 4))
