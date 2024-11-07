@@ -37,32 +37,6 @@ class ChordEvent:
     def __repr__(self):
         return f"Chord(notes={self.notes}, time={self.time:.2f}, dur={self.duration:.2f})"
 
-# class MIDISequenceDataset(Dataset):
-#     """Dataset for MIDI event sequences."""
-#     def __init__(self, sequences: List[List[int]], sequence_length: int):
-#         self.sequences = sequences
-#         self.sequence_length = sequence_length
-        
-#     def __len__(self):
-#         return sum(len(seq) - self.sequence_length for seq in self.sequences)
-    
-#     def __getitem__(self, idx):
-#         # Find which sequence this index belongs to
-#         sequence_idx = 0
-#         while idx >= len(self.sequences[sequence_idx]) - self.sequence_length:
-#             idx -= len(self.sequences[sequence_idx]) - self.sequence_length
-#             sequence_idx += 1
-        
-#         sequence = self.sequences[sequence_idx]
-#         # Get input and target sequences
-#         input_seq = sequence[idx:idx + self.sequence_length]
-#         target_seq = sequence[idx + 1:idx + self.sequence_length + 1]
-        
-#         return (
-#             torch.LongTensor(input_seq),
-#             torch.LongTensor(target_seq)
-#         )
-
 
 class HarmonicSequenceDataset(Dataset):
     """Dataset for harmonic sequences with sliding window."""
@@ -138,52 +112,6 @@ class HarmonicSequenceDataset(Dataset):
             'max_sequence_length': max(sequence_lengths),
             'avg_sequence_length': sum(sequence_lengths) / total_sequences
         } 
-
-
-# class MultiHeadAttention(nn.Module):
-#     """Multi-head attention module for musical sequences."""
-#     def __init__(self, hidden_dim: int, num_heads: int = 4, dropout: float = 0.1):
-#         super().__init__()
-#         assert hidden_dim % num_heads == 0, "hidden_dim must be divisible by num_heads"
-        
-#         self.hidden_dim = hidden_dim
-#         self.num_heads = num_heads
-#         self.head_dim = hidden_dim // num_heads
-#         self.scale = self.head_dim ** -0.5
-        
-#         # Linear layers for Q, K, V
-#         self.q_linear = nn.Linear(hidden_dim, hidden_dim)
-#         self.k_linear = nn.Linear(hidden_dim, hidden_dim)
-#         self.v_linear = nn.Linear(hidden_dim, hidden_dim)
-        
-#         self.dropout = nn.Dropout(dropout)
-#         self.output_linear = nn.Linear(hidden_dim, hidden_dim)
-    
-#     def forward(self, query, key, value, mask=None):
-#         batch_size = query.size(0)
-        
-#         # Linear transformations and split into heads
-#         Q = self.q_linear(query).view(batch_size, -1, self.num_heads, self.head_dim).transpose(1, 2)
-#         K = self.k_linear(key).view(batch_size, -1, self.num_heads, self.head_dim).transpose(1, 2)
-#         V = self.v_linear(value).view(batch_size, -1, self.num_heads, self.head_dim).transpose(1, 2)
-        
-#         # Calculate attention scores
-#         scores = torch.matmul(Q, K.transpose(-2, -1)) * self.scale
-        
-#         if mask is not None:
-#             scores = scores.masked_fill(mask == 0, float('-inf'))
-        
-#         # Apply attention
-#         attention_weights = F.softmax(scores, dim=-1)
-#         attention_weights = self.dropout(attention_weights)
-#         context = torch.matmul(attention_weights, V)
-        
-#         # Reshape and apply output transformation
-#         context = context.transpose(1, 2).contiguous().view(batch_size, -1, self.hidden_dim)
-#         output = self.output_linear(context)
-        
-#         return output, attention_weights
-    
 
     
 class MultiHeadAttention(nn.Module):
@@ -391,7 +319,7 @@ class HarmonicEventProcessor:
 class HarmonicSequenceLSTM(nn.Module):
     """Enhanced LSTM with multi-head attention for harmonic sequences."""
     def __init__(self, vocab_size: int, embedding_dim: int, hidden_dim: int, 
-                 num_layers: int, num_heads: int = 4, dropout: float = 0.1):
+                 num_layers: int=3, num_heads: int = 4, dropout: float = 0.1):
         super().__init__()
         self.vocab_size = vocab_size
         self.hidden_dim = hidden_dim
@@ -401,11 +329,10 @@ class HarmonicSequenceLSTM(nn.Module):
         self.embedding = nn.Embedding(vocab_size, embedding_dim)
         self.pos_encoder = PositionalEncoding(embedding_dim)
         
-        # LSTM layers
         self.lstm = nn.LSTM(
-            embedding_dim,
-            hidden_dim,
-            num_layers,
+            input_size=embedding_dim,
+            hidden_size=hidden_dim,
+            num_layers=num_layers,  # Explicitly set to 3
             batch_first=True,
             bidirectional=True,
             dropout=dropout if num_layers > 1 else 0
@@ -413,7 +340,7 @@ class HarmonicSequenceLSTM(nn.Module):
         
         # Attention modules
         self.self_attention = MultiHeadAttention(
-            hidden_dim * 2,  # * 2 for bidirectional
+            hidden_dim*2,  # * 2 for bidirectional
             num_heads,
             dropout
         )
@@ -425,6 +352,7 @@ class HarmonicSequenceLSTM(nn.Module):
         
         # Output layer
         self.fc = nn.Linear(hidden_dim * 2, vocab_size)
+        # self.fc = nn.Linear(hidden_dim , vocab_size)
     
     # def create_attention_mask(self, seq_len: int, device: torch.device) -> torch.Tensor:
     #     """Create causal attention mask."""
@@ -489,7 +417,7 @@ class HarmonicSequenceTrainer:
         )
     
     def train(self, dataloader: DataLoader, num_epochs: int, learning_rate: float,
-              save_path: str = 'harmonic_model.pth'):
+              save_path: str ):
         """Train the harmonic sequence model."""
         criterion = nn.CrossEntropyLoss()
         optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
@@ -681,9 +609,15 @@ class InferenceManager:
     
     def load_model(self):
         """Load the model, inferring architecture from state dict if necessary."""
-        try:
+        if True: #try:
             # Load checkpoint
-            checkpoint = torch.load(self.model_path, map_location=self.device)
+            # checkpoint = torch.load(self.model_path, map_location=self.device)
+
+            checkpoint = torch.load(
+            self.model_path,
+            map_location=self.device,
+            weights_only=True  # Safe loading
+            )
             
             # Extract state dict
             if isinstance(checkpoint, dict):
@@ -699,14 +633,21 @@ class InferenceManager:
             model = HarmonicSequenceLSTM(**model_params)
             
             # Load state dict
-            model.load_state_dict(state_dict)
+            # model.load_state_dict(state_dict)
+
+            missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
+            if missing_keys:
+                print("Warning: Missing keys in state dict:", missing_keys)
+            if unexpected_keys:
+                print("Warning: Unexpected keys in state dict:", unexpected_keys)
+
             model = model.to(self.device)
             model.eval()
             
             return model
             
-        except Exception as e:
-            raise RuntimeError(f"Failed to load model: {str(e)}")
+        # except Exception as e:
+        #     raise RuntimeError(f"Failed to load model: {str(e)}")
     
     def infer_model_params(self, state_dict: Dict[str, torch.Tensor]) -> Dict:
         """Infer model parameters from state dictionary."""
@@ -716,11 +657,23 @@ class InferenceManager:
             vocab_size, embedding_dim = embedding_weight.shape
             
             # Extract hidden dimension from LSTM
-            hidden_dim = state_dict['lstm.weight_hh_l0'].shape[1] #// 4
+            hidden_dim = state_dict['lstm.weight_hh_l0'].shape[1] # // 4
             
-            # Count number of LSTM layers
-            num_layers = sum(1 for key in state_dict if 'lstm.weight_hh' in key)
+            # # Count number of LSTM layers
+            # # num_layers = sum(1 for key in state_dict if 'lstm.weight_hh' in key)
+
+            # Count LSTM layers by looking at the layer-specific weights
+            max_layer_idx = -1
+            for key in state_dict.keys():
+                if 'lstm.weight_ih_l' in key and '_reverse' not in key:
+                    layer_idx = int(key.split('lstm.weight_ih_l')[1][0])  # Extract the layer number
+                    max_layer_idx = max(max_layer_idx, layer_idx)
             
+            # Add 1 because layer indexing starts at 0
+            num_layers = max_layer_idx + 1
+            print('num_layers loaded is : ', num_layers)
+
+
             # Ensure vocab size matches processor
             if vocab_size != self.processor.vocab_size:
                 print(f"Warning: Model vocab size ({vocab_size}) differs from processor vocab size ({self.processor.vocab_size})")
@@ -738,54 +691,95 @@ class InferenceManager:
             
         except KeyError as e:
             raise ValueError(f"Could not infer model parameters from state dict: {str(e)}")
+        
+
+
+    def verify_model_loading(self, model, state_dict):
+        """Verify that model loading was successful."""
+        # Check that all parameters are loaded
+        model_state = model.state_dict()
+        loaded_params = state_dict.keys()
+        model_params = model_state.keys()
+        
+        missing = [k for k in model_params if k not in loaded_params]
+        unexpected = [k for k in loaded_params if k not in model_params]
+        
+        if missing or unexpected:
+            print("\nModel loading verification:")
+            if missing:
+                print("Missing parameters:", missing)
+            if unexpected:
+                print("Unexpected parameters:", unexpected)
+            
+        return len(missing) == 0 and len(unexpected) == 0
     
-    def generate(self, sequence_length: int = 16, 
-                generation_length: int = 32,
-                temperature: float = 0.8) -> Tuple[List[int], List[ChordEvent]]:
-        """Generate new sequence using loaded model."""
-        print(f"\nStarting generation with:")
+
+    def safe_generate(self, sequence_length: int = 16, 
+                     generation_length: int = 32,
+                     temperature: float = 0.8) -> Tuple[List[int], List[ChordEvent]]:
+        """Generate sequence with additional safety checks."""
+        print(f"\nStarting safe generation with:")
         print(f"- Sequence length: {sequence_length}")
         print(f"- Generation length: {generation_length}")
         print(f"- Temperature: {temperature}")
-        
-        # Create seed sequence
-        seed_sequence = [0] * sequence_length
+        print(f"- Device: {self.device}")
         
         try:
+            # Verify model is in eval mode
+            self.model.eval()
+            
+            # Create seed sequence
+            seed_sequence = [0] * sequence_length
+            
             with torch.no_grad():
                 current_seq = torch.LongTensor([seed_sequence]).to(self.device)
                 generated = list(seed_sequence)
                 hidden = None
                 
                 for i in range(generation_length):
-                    # Get model output
-                    output, hidden = self.model(current_seq, hidden)
-                    
-                    # Apply temperature
-                    logits = output[0, -1, :self.processor.vocab_size] / temperature
-                    
-                    # Get probabilities
-                    probs = torch.softmax(logits, dim=0)
-                    
-                    # Sample next token
-                    next_event = torch.multinomial(probs, 1).item()
-                    
-                    # Add to generated sequence
-                    generated.append(next_event)
-                    
-                    # Update input sequence
-                    current_seq = torch.LongTensor([generated[-sequence_length:]]).to(self.device)
-                    
-                    if (i + 1) % 10 == 0:
-                        print(f"Generated {i + 1}/{generation_length} events")
-            
-            # Convert to events
-            generated_events = self.processor.indices_to_events(generated)
-            
-            return generated, generated_events
-            
+                    try:
+                        # Get model output
+                        output, hidden, _ = self.model(current_seq, hidden)
+                        
+                        # Apply temperature
+                        logits = output[0, -1, :self.processor.vocab_size] / temperature
+                        
+                        # Get probabilities
+                        probs = torch.softmax(logits, dim=0)
+                        
+                        # Sample next token
+                        next_event = torch.multinomial(probs, 1).item()
+                        
+                        # Verify valid index
+                        if not 0 <= next_event < self.processor.vocab_size:
+                            print(f"Warning: Invalid index {next_event}, using modulo")
+                            next_event = next_event % self.processor.vocab_size
+                        
+                        generated.append(next_event)
+                        
+                        # Update input sequence
+                        current_seq = torch.LongTensor([generated[-sequence_length:]]).to(self.device)
+                        
+                        if (i + 1) % 10 == 0:
+                            print(f"Generated {i + 1}/{generation_length} events")
+                            
+                    except RuntimeError as e:
+                        print(f"Error during generation step {i}: {str(e)}")
+                        break
+                
+                # Convert to events
+                try:
+                    generated_events = self.processor.indices_to_events(generated)
+                except Exception as e:
+                    print(f"Error converting to events: {str(e)}")
+                    return generated, []
+                
+                return generated, generated_events
+                
         except Exception as e:
-            raise RuntimeError(f"Generation failed: {str(e)}")
+            print(f"Generation failed: {str(e)}")
+            return [], []
+
     
     def save_midi(self, events: List[ChordEvent], output_path: str):
         """Save generated events as MIDI file."""
@@ -796,7 +790,69 @@ class InferenceManager:
             raise RuntimeError(f"Failed to save MIDI: {str(e)}")
 
 
+class MusicAttentionWrapper:
+    """Wrapper for attention visualization and analysis."""
+    def __init__(self, model: HarmonicSequenceLSTM):
+        self.model = model
+        self.attention_maps = []
+    
+    def get_attention_weights(self) -> List[torch.Tensor]:
+        """Get stored attention weights."""
+        return self.attention_maps
+    
+    def clear_attention_maps(self):
+        """Clear stored attention maps."""
+        self.attention_maps = []
+    
+    def analyze_attention_patterns(self, attention_weights: torch.Tensor):
+        """Analyze attention patterns in the generated sequence."""
+        # Average attention weights across heads
+        avg_attention = attention_weights.mean(dim=1)
+        
+        # Find strongest connections
+        top_k = 3
+        values, indices = torch.topk(avg_attention, top_k, dim=-1)
+        
+        return {
+            'top_connections': indices.cpu().numpy(),
+            'connection_strengths': values.cpu().numpy()
+        }
 
+def generate_with_attention_analysis(model: HarmonicSequenceLSTM,
+                                   seed_sequence: List[int],
+                                   length: int,
+                                   temperature: float = 1.0) -> Tuple[List[int], List[Dict]]:
+    """Generate sequence with attention analysis."""
+    model.eval()
+    attention_wrapper = MusicAttentionWrapper(model)
+    device = next(model.parameters()).device
+    
+    with torch.no_grad():
+        current_seq = torch.LongTensor([seed_sequence]).to(device)
+        generated = list(seed_sequence)
+        hidden = None
+        attention_analyses = []
+        
+        for _ in range(length):
+            # Generate next token
+            output, hidden, attn_weights = model(current_seq, hidden)
+            
+            # Apply temperature
+            logits = output[0, -1, :] / temperature
+            probs = torch.softmax(logits, dim=0)
+            
+            # Sample next token
+            next_event = torch.multinomial(probs, 1).item()
+            generated.append(next_event)
+            
+            # Analyze attention patterns
+            analysis = attention_wrapper.analyze_attention_patterns(attn_weights)
+            attention_analyses.append(analysis)
+            
+            # Update sequence
+            current_seq = torch.LongTensor([generated[-len(seed_sequence):]]).to(device)
+    
+    return generated, attention_analyses
 
 def create_harmonic_midi(events: List[ChordEvent], output_file: str):
     """Create a MIDI file from chord events."""
@@ -849,10 +905,10 @@ def play_midi(midi_file_path):
 
 def main():
 
-    mode = 'train' #  'generate'
+    mode = 'generate' # 'train' #  'generate'
     # sequence_length =  50
     midi_folder = "./midi_dataset/piano_maestro-v1.0.0/2004/" #all_years/"
-    model_file = 'harmonic_model_test.pth'
+    model_file = 'harmonic_model.pth'
     processor_file = 'processor.pkl'
     
     # Model parameters
@@ -929,10 +985,12 @@ def main():
             train_loader,
             num_epochs=train_params['num_epochs'],
             learning_rate=train_params['learning_rate'],
+            save_path = model_file
         )
         
         # Save the model and processor
-        torch.save(trainer.model.state_dict(), model_file)
+        # torch.save(trainer.model.state_dict(), model_file)
+        
         with open(processor_file, 'wb') as f:
             pickle.dump(processor, f)
         
@@ -941,30 +999,11 @@ def main():
 
 
     elif mode == 'generate':
-        
-        # # Generation example
-        # seed_sequence = [0] * 4  # Initialize with some seed chords
-        # # seed_sequence = dataset.get_random_seed_sequence()
-        # # seed_sequence = indexed_sequences[0][:train_params['sequence_length']]
-        # trainer = HarmonicSequenceTrainer(processor, model_params)
-
-        # model_load = trainer.load_model(model_file)
-        
-        # generated_indices = trainer.safe_generation(
-        #     seed_sequence=seed_sequence,
-        #     length=32,
-        #     temperature=0.8
-        # )
-
-        # # Convert to events and create MIDI
-        # generated_events = processor.indices_to_events(generated_indices)
-        # create_harmonic_midi(generated_events, "generated_harmony.mid")
-
 
         """Example usage of inference manager."""
         # Paths to saved files
-        model_path = 'harmonic_model.pth'
-        processor_path = 'processor.pkl'
+        model_path = model_file
+        processor_path = processor_file
         output_path = 'generated_sequence.mid'
         
         # Validate paths
@@ -978,14 +1017,31 @@ def main():
             print("Initializing inference manager...")
             inference_manager = InferenceManager(model_path, processor_path)
             
-            # Generate sequence
-            print("Generating sequence...")
-            generated_indices, generated_events = inference_manager.generate(
-                sequence_length=16,
-                generation_length=512,
-                temperature=0.8
+            generated_indices, generated_events = inference_manager.safe_generate(
+            sequence_length=16,
+            generation_length=32,
+            temperature=0.8
             )
+
+            # # Generate with attention analysis
+            # generated_indices, attention_analyses = generate_with_attention_analysis(
+            #     model=inference_manager.model,
+            #     seed_sequence=[0] * 16,  # Example seed
+            #     length=32,
+            #     temperature=0.8
+            # )
             
+            # # Convert to events
+            # generated_events = inference_manager.processor.indices_to_events(generated_indices)
+            
+            # # Print attention analysis
+            # print("\nAttention Analysis:")
+            # for i, analysis in enumerate(attention_analyses):
+            #     print(f"\nStep {i+1}:")
+            #     print("Top connections:", analysis['top_connections'])
+            #     print("Connection strengths:", analysis['connection_strengths'])
+
+
             # Save to MIDI
             print("Saving to MIDI...")
             inference_manager.save_midi(generated_events, output_path)
