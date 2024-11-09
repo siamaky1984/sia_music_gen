@@ -381,6 +381,7 @@ class HarmonicSequenceLSTM(nn.Module):
         
         # Self-attention
         mask = self.create_attention_mask(seq_len, device)
+
         attended_out, attention_weights = self.self_attention(
             lstm_out, lstm_out, lstm_out,
             mask=mask
@@ -905,10 +906,10 @@ def play_midi(midi_file_path):
 
 def main():
 
-    mode = 'generate' # 'train' #  'generate'
+    mode = 'train' #  'generate'
     # sequence_length =  50
     midi_folder = "./midi_dataset/piano_maestro-v1.0.0/2004/" #all_years/"
-    model_file = 'harmonic_model.pth'
+    model_file = 'harmonic_model_attention.pth'
     processor_file = 'processor.pkl'
     
     # Model parameters
@@ -924,7 +925,7 @@ def main():
     train_params = {
         'batch_size': 8,      # Reduced batch size
         'sequence_length': 16,
-        'num_epochs': 1,
+        'num_epochs': 10,
         'learning_rate': 0.001
     }
     
