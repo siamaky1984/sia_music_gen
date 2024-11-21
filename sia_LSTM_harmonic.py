@@ -908,7 +908,7 @@ def main():
 
     mode = 'train' #  'generate'
     # sequence_length =  50
-    midi_folder = "./midi_dataset/piano_maestro-v1.0.0/2004/" #all_years/"
+    midi_folder = "./midi_dataset/piano_maestro-v1.0.0/all_years/"
     model_file = 'harmonic_model_attention.pth'
     processor_file = 'processor.pkl'
     

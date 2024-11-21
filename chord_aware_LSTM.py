@@ -23,6 +23,9 @@ from typing import List, Tuple, Set, Dict
 from collections import defaultdict
 
 
+from sia_LSTM_harmonic import InferenceManager, play_midi
+
+
 
 
 class ChordEvent:
@@ -518,10 +521,10 @@ class ChordAwareAttention(nn.Module):
         # Combine all scores
         combined_scores = sum(scores.values()) * scale / len(scores)
         
-        if mask is not None:
-            mask = mask.unsqueeze(1)
-            mask = mask.expand(batch_size, self.num_heads, seq_len, seq_len)
-            combined_scores = combined_scores.masked_fill(mask == 0, float('-inf'))
+        # if mask is not None:
+        #     mask = mask.unsqueeze(1)
+        #     mask = mask.expand(batch_size, self.num_heads, seq_len, seq_len)
+        #     combined_scores = combined_scores.masked_fill(mask == 0, float('-inf'))
         
         attention_weights = F.softmax(combined_scores, dim=-1)
         attention_weights = self.dropout(attention_weights)
@@ -872,6 +875,8 @@ class HarmonicSequenceTrainer:
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.processor = checkpoint['processor']
 
+        return self.model, self.processor
+
 
 # Example usage
 def prepare_training_data(midi_files: List[str]) -> Tuple[HarmonicEventProcessor, DataLoader]:
@@ -937,32 +942,85 @@ def extract_chord_events_from_midi(midi_file: str) -> List[ChordEvent]:
 
 # Main training script
 def main():
+
+    mode =  'train'
+
     # Setup
-    midi_folder = "./midi_dataset/piano_maestro-v1.0.0/all_years/"
+    midi_folder = "./midi_dataset/piano_maestro-v1.0.0/2004/" # all_years/"
     midi_files = glob.glob(os.path.join(midi_folder, "*.mid")) + \
                     glob.glob(os.path.join(midi_folder, "*.midi"))
     print( len(midi_files) )
     processor, dataloader = prepare_training_data(midi_files)
     
-    # Create model
-    model_params = {
-        'vocab_size': processor.vocab_size,
-        'embedding_dim': 256,
-        'hidden_dim': 512,
-        'num_layers': 3,
-        'num_heads': 4,
-        'dropout': 0.1
-    }
+    if mode == 'train':
+        
+        # Create model
+        model_params = {
+            'vocab_size': processor.vocab_size,
+            'embedding_dim': 256,
+            'hidden_dim': 512,
+            'num_layers': 3,
+            'num_heads': 4,
+            'dropout': 0.1
+        }
+        
+        # # Initialize trainer
+        trainer = HarmonicSequenceTrainer(processor, model_params)
+        
+        # Train
+        trainer.train(dataloader, num_epochs=10, learning_rate=0.001)
+
+        
+        # Save model
+        trainer.save_model('harmonic_model_attention.pth')
     
-    # # Initialize trainer
-    trainer = HarmonicSequenceTrainer(processor, model_params)
-    
-    # Train
-    trainer.train(dataloader, num_epochs=10, learning_rate=0.001)
+
+    elif mode =='inference':
+        # Paths to saved files
+        model_path = './models/harmonic_model_attention.pth'
+
+        processor_path = './models/processor.pkl'
+        
+        output_path = 'generated_sequence.mid'
+
+        # Create model
+        # model_params = {
+        #     'vocab_size': processor.vocab_size,
+        #     'embedding_dim': 256,
+        #     'hidden_dim': 512,
+        #     'num_layers': 3,
+        #     'num_heads': 4,
+        #     'dropout': 0.1
+        # }
+
+        # trainer = HarmonicSequenceTrainer(processor, model_params)
+
+        # model, processor_pkl = trainer.load_model( model_path )
+
+
+
+        print("Initializing inference manager...")
+        inference_manager = InferenceManager(model_path, processor_path)
+        
+        generated_indices, generated_events = inference_manager.safe_generate(
+        sequence_length=16,
+        generation_length=32,
+        temperature=0.8
+        )
+
+
+        # Save to MIDI
+        print("Saving to MIDI...")
+        inference_manager.save_midi(generated_events, output_path)
+        
+        print("\nGeneration Statistics:")
+        print(f"Total events generated: {len(generated_events)}")
+        print(f"Unique chords used: {len(set([event.notes for event in generated_events]))}")
+
+        play_midi(output_path)
 
     
-    # Save model
-    trainer.save_model('harmonic_model_attention.pth')
+
 
 
 if __name__ == "__main__":
