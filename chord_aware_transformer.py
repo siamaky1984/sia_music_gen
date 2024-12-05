@@ -35,7 +35,24 @@ class ChordEvent:
         self.time = time
         self.duration = duration
         self.velocity = velocity
-        self.bass_note = min(notes) if notes else 0
+        # self.bass_note = min(notes) if notes else 0
+
+        # Separate into voices
+        self.bass_notes = self._get_bass_notes(notes)
+        self.upper_notes = self._get_upper_notes(notes)
+
+    def _get_bass_notes(self, notes: Set[int]) -> Set[int]:
+        """Extract bass notes (usually below middle C - MIDI note 60)."""
+        return {note for note in notes if note < 60}
+    
+    def _get_upper_notes(self, notes: Set[int]) -> Set[int]:
+        """Extract upper notes (usually above or at middle C)."""
+        return {note for note in notes if note >= 60}
+    
+    @property
+    def has_both_hands(self) -> bool:
+        """Check if event has notes for both hands."""
+        return bool(self.treble_notes and self.bass_notes)
 
 class HarmonicEventProcessor:
     """Processes MIDI files into chord events."""
@@ -50,24 +67,54 @@ class HarmonicEventProcessor:
             midi_data = pretty_midi.PrettyMIDI(midi_file)
             events = []
             
+            # Separate notes by register
+            bass_notes = defaultdict(list)
+            upper_notes = defaultdict(list)
+
             # Group notes by time
             note_groups = defaultdict(set)
             for instrument in midi_data.instruments:
                 if not instrument.is_drum:
                     for note in instrument.notes:
                         start_time = round(note.start / self.time_threshold) * self.time_threshold
-                        note_groups[start_time].add(note.pitch)
+                        # note_groups[start_time].add(note.pitch)
+
+                        # Separate based on pitch
+                        if note.pitch < 60:  # Below middle C
+                            bass_notes[start_time].append(note)
+                        else:
+                            upper_notes[start_time].append(note)
+
             
-            # Create chord events
-            for time, notes in sorted(note_groups.items()):
-                if notes:
+            # Combine notes into chord events
+            all_times = sorted(set(bass_notes.keys()) | set(upper_notes.keys()))
+            
+            for time in all_times:
+                # Get current notes from both registers
+                current_bass = {note.pitch for note in bass_notes[time]}
+                current_upper = {note.pitch for note in upper_notes[time]}
+                
+                # Combine into chord event
+                if current_bass or current_upper:
                     event = ChordEvent(
-                        notes=notes,
+                        notes=current_bass | current_upper,
                         time=time,
                         duration=self.time_threshold,
                         velocity=80
                     )
                     events.append(event)
+
+
+            # # Create chord events
+            # for time, notes in sorted(note_groups.items()):
+            #     if notes:
+            #         event = ChordEvent(
+            #             notes=notes,
+            #             time=time,
+            #             duration=self.time_threshold,
+            #             velocity=80
+            #         )
+            #         events.append(event)
             
             return events
         except Exception as e:
@@ -672,6 +719,7 @@ class TransformerSystem:
     def load_checkpoint(self, model_path: str, processor_path: str):
         """Load model checkpoint."""
         # Load processor
+        print(processor_path)
         with open(processor_path, 'rb') as f:
             self.processor = pickle.load(f)
         
@@ -683,106 +731,361 @@ class TransformerSystem:
         self.model = ChordAwareTransformer(**self.model_params).to(self.device)
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.model.eval()
-    
-    def generate(self, 
-                seed_sequence: List[int] = None,
+
+
+    def generate(self, seed_sequence = None,
                 length: int = 32,
                 temperature: float = 1.0,
-                top_k: int = 50,
-                top_p: float = 0.9) -> List[ChordEvent]:
-        """Generate new music sequence."""
+                # min_bass_note: int = 36,  # C2
+                # max_bass_note: int = 59,  # B3
+                # min_upper_note: int = 60,  # C4
+                # max_upper_note: int = 84,  # C6
+                ) -> List[ChordEvent]:
+        """Generate with voice range constraints."""
         if self.model is None:
             raise ValueError("Model not initialized. Please load a checkpoint first.")
         
-        self.model.eval()
-        sequence_length = self.model_params['max_seq_length']
+        # self.model.eval()
         
         with torch.no_grad():
-            # Create seed sequence if not provided
+            # Initialize seed sequence
             if seed_sequence is None:
-                seed_sequence = [0] * sequence_length
-            else:
-                # Pad or trim seed sequence to match sequence length
-                if len(seed_sequence) < sequence_length:
-                    seed_sequence = seed_sequence + [0] * (sequence_length - len(seed_sequence))
-                else:
-                    seed_sequence = seed_sequence[:sequence_length]
+                seed_sequence = [0] * 4
             
             src = torch.LongTensor([seed_sequence]).to(self.device)
+
             tgt = torch.LongTensor([[seed_sequence[0]]]).to(self.device)
-            
+
             generated = list(seed_sequence)
-            print(f"Initial sequence length: {len(generated)}")
             
             for i in range(length):
-                context_sequence = generated[-sequence_length:]
-                if len(context_sequence) < sequence_length:
-                    context_sequence = [0] * (sequence_length - len(context_sequence)) + context_sequence
-                
                 # Convert to chord events
-                chord_events = self.processor.indices_to_events(generated)
+                chord_events = self.processor.indices_to_events(generated[-len(seed_sequence):])
                 
                 # Get model output
                 output = self.model(src, tgt, chord_events)
                 
-                # Sample next token
+                # Apply temperature
                 logits = output[0, -1, :] / temperature
                 
-                # Apply top-k filtering
-                if top_k > 0:
-                    indices_to_remove = logits < torch.topk(logits, top_k)[0][..., -1, None]
-                    logits[indices_to_remove] = float('-inf')
+                # Split logits based on register
+                bass_indices = []
+                upper_indices = []
                 
-                # Apply top-p filtering
-                if top_p < 1.0:
-                    sorted_logits, sorted_indices = torch.sort(logits, descending=True)
-                    cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
-                    
-                    sorted_indices_to_remove = cumulative_probs > top_p
-                    sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
-                    sorted_indices_to_remove[..., 0] = 0
-                    
-                    indices_to_remove = sorted_indices[sorted_indices_to_remove]
-                    logits[indices_to_remove] = float('-inf')
+                # Find valid indices for each register
+                for idx, chord in enumerate(self.processor.idx_to_chord.items()):
+                    notes = chord[1]
+                    # if any(min_bass_note <= note <= max_bass_note for note in notes):
+                    #     bass_indices.append(idx)
+                    # if any(min_upper_note <= note <= max_upper_note for note in notes):
+                    #     upper_indices.append(idx)
+                    if any(note < 60 for note in notes):
+                        bass_indices.append(idx)
+                    else:
+                        upper_indices.append(idx)
+                
+                # Sample from appropriate register based on position
+                if i % 2 == 0:  # Alternate between bass and upper voices
+                    valid_indices = bass_indices
+                else:
+                    valid_indices = upper_indices
+                
+                # Mask invalid indices
+                mask = torch.ones_like(logits) * float('-1e9')
+                mask[valid_indices] = 0
+                logits = logits + mask
                 
                 # Sample
-                probs = F.softmax(logits, dim=-1)
+                probs = F.softmax(logits, dim=0)
                 next_token = torch.multinomial(probs, 1).item()
                 
                 generated.append(next_token)
-                tgt = torch.cat([tgt, torch.LongTensor([[next_token]]).to(self.device)], dim=1)
-
-                # Optional: Keep tgt sequence length manageable
-                if tgt.size(1) > sequence_length:
-                    tgt = tgt[:, -sequence_length:]
-                
-                if (i + 1) % 10 == 0:
-                    print(f"Generated {i + 1}/{length} events")
+                src = torch.LongTensor([generated[-len(seed_sequence):]]).to(self.device)
             
             return self.processor.indices_to_events(generated)
-    
-    def save_midi(self, events: List[ChordEvent], output_path: str):
-        """Save generated events as MIDI file."""
-        midi = pretty_midi.PrettyMIDI()
-        piano = pretty_midi.Instrument(program=0)
         
+    # def generate(self, 
+    #             seed_sequence: List[int] = None,
+    #             length: int = 32,
+    #             temperature: float = 1.0,
+    #             top_k: int = 50,
+    #             top_p: float = 0.9) -> List[ChordEvent]:
+    #     """Generate new music sequence."""
+    #     if self.model is None:
+    #         raise ValueError("Model not initialized. Please load a checkpoint first.")
+        
+    #     self.model.eval()
+    #     sequence_length = self.model_params['max_seq_length']
+        
+    #     with torch.no_grad():
+    #         # Create seed sequence if not provided
+    #         if seed_sequence is None:
+    #             seed_sequence = [0] * sequence_length
+    #         else:
+    #             # Pad or trim seed sequence to match sequence length
+    #             if len(seed_sequence) < sequence_length:
+    #                 seed_sequence = seed_sequence + [0] * (sequence_length - len(seed_sequence))
+    #             else:
+    #                 seed_sequence = seed_sequence[:sequence_length]
+            
+    #         src = torch.LongTensor([seed_sequence]).to(self.device)
+    #         tgt = torch.LongTensor([[seed_sequence[0]]]).to(self.device)
+            
+    #         generated = list(seed_sequence)
+    #         print(f"Initial sequence length: {len(generated)}")
+            
+    #         for i in range(length):
+    #             context_sequence = generated[-sequence_length:]
+    #             if len(context_sequence) < sequence_length:
+    #                 context_sequence = [0] * (sequence_length - len(context_sequence)) + context_sequence
+                
+    #             # Convert to chord events
+    #             chord_events = self.processor.indices_to_events(generated)
+                
+    #             # Get model output
+    #             output = self.model(src, tgt, chord_events)
+                
+    #             # Sample next token
+    #             logits = output[0, -1, :] / temperature
+                
+    #             # Apply top-k filtering
+    #             if top_k > 0:
+    #                 indices_to_remove = logits < torch.topk(logits, top_k)[0][..., -1, None]
+    #                 logits[indices_to_remove] = float('-inf')
+                
+    #             # Apply top-p filtering
+    #             if top_p < 1.0:
+    #                 sorted_logits, sorted_indices = torch.sort(logits, descending=True)
+    #                 cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+                    
+    #                 sorted_indices_to_remove = cumulative_probs > top_p
+    #                 sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+    #                 sorted_indices_to_remove[..., 0] = 0
+                    
+    #                 indices_to_remove = sorted_indices[sorted_indices_to_remove]
+    #                 logits[indices_to_remove] = float('-inf')
+                
+    #             # Sample
+    #             probs = F.softmax(logits, dim=-1)
+    #             next_token = torch.multinomial(probs, 1).item()
+                
+    #             generated.append(next_token)
+    #             tgt = torch.cat([tgt, torch.LongTensor([[next_token]]).to(self.device)], dim=1)
+
+    #             # Optional: Keep tgt sequence length manageable
+    #             if tgt.size(1) > sequence_length:
+    #                 tgt = tgt[:, -sequence_length:]
+                
+    #             if (i + 1) % 10 == 0:
+    #                 print(f"Generated {i + 1}/{length} events")
+            
+    #         return self.processor.indices_to_events(generated)
+        
+
+    
+    # def save_midi(self, events: List[ChordEvent], output_path: str):
+    #     """Save generated events as MIDI file."""
+    #     midi = pretty_midi.PrettyMIDI()
+    #     piano = pretty_midi.Instrument(program=0)
+        
+    #     for event in events:
+    #         for pitch in event.notes:
+    #             note = pretty_midi.Note(
+    #                 velocity=event.velocity,
+    #                 pitch=int(pitch),
+    #                 start=event.time,
+    #                 end=event.time + event.duration
+    #             )
+    #             piano.notes.append(note)
+        
+    #     midi.instruments.append(piano)
+    #     midi.write(output_path)
+    #     print(f"MIDI file saved to: {output_path}")
+
+
+
+    # def create_harmonic_midi(self,events: List[ChordEvent], output_file: str):
+    #     """Enhanced MIDI creation with proper voice separation."""
+    #     midi = pretty_midi.PrettyMIDI()
+        
+    #     # Create two tracks for different registers
+    #     bass_track = pretty_midi.Instrument(program=0)  # Piano
+    #     upper_track = pretty_midi.Instrument(program=0)  # Piano
+        
+    #     # Process events
+    #     for event in events:
+    #         # Add bass notes
+    #         for pitch in event.bass_notes:
+    #             note = pretty_midi.Note(
+    #                 velocity=event.velocity,
+    #                 pitch=int(pitch),
+    #                 start=event.time,
+    #                 end=event.time + event.duration
+    #             )
+    #             bass_track.notes.append(note)
+            
+    #         # Add upper notes
+    #         for pitch in event.upper_notes:
+    #             note = pretty_midi.Note(
+    #                 velocity=event.velocity,
+    #                 pitch=int(pitch),
+    #                 start=event.time,
+    #                 end=event.time + event.duration
+    #             )
+    #             upper_track.notes.append(note)
+        
+    #     # Add tracks to MIDI
+    #     midi.instruments.append(bass_track)
+    #     midi.instruments.append(upper_track)
+        
+    #     # Sort notes in each track
+    #     for track in midi.instruments:
+    #         track.notes.sort(key=lambda x: (x.start, x.pitch))
+        
+    #     midi.write(output_file)
+    #     print(f"Harmonic MIDI file saved to: {output_file}")
+
+    def create_harmonic_midi(self, events: List[ChordEvent], output_file: str):
+        """Create MIDI file with proper piano staff layout."""
+        midi = pretty_midi.PrettyMIDI()
+        
+        # Create single piano instrument
+        piano = pretty_midi.Instrument(
+            program=0,  # Acoustic Grand Piano
+            is_drum=False,
+            name='Piano'  # Single piano instrument
+        )
+        
+        # Process events
         for event in events:
+            # Add all notes to the same piano track
             for pitch in event.notes:
                 note = pretty_midi.Note(
-                    velocity=event.velocity,
+                    velocity=event.velocity if event.velocity else 80,
                     pitch=int(pitch),
                     start=event.time,
                     end=event.time + event.duration
                 )
                 piano.notes.append(note)
         
+        # Sort notes by time and pitch
+        piano.notes.sort(key=lambda x: (x.start, x.pitch))
+        
+        # Add single piano track
         midi.instruments.append(piano)
-        midi.write(output_path)
-        print(f"MIDI file saved to: {output_path}")
+        
+        # # Add time signature and tempo
+        # ts = pretty_midi.TimeSignature(numerator=4, denominator=4, time=0)
+        # midi.time_signatures.append(ts)
+        
+        # tempo = pretty_midi.Tempo(tempo=120, time=0)
+        # midi.tempo_changes.append(tempo)
+        
+        # Write MIDI file
+        midi.write(output_file)
+
+    # def create_harmonic_midi(self, events: List[ChordEvent], output_file: str):
+    #     """Create MIDI with proper staff separation for MuseScore."""
+    #     midi = pretty_midi.PrettyMIDI()
+        
+    #     # Create two separate piano tracks for left and right hand
+    #     # Track 0: Right hand (treble clef)
+    #     right_hand = pretty_midi.Instrument(
+    #         program=0,  # Acoustic Grand Piano
+    #         name='Right Hand',
+    #         is_drum=False
+    #     )
+        
+    #     # Track 1: Left hand (bass clef)
+    #     left_hand = pretty_midi.Instrument(
+    #         program=0,  # Acoustic Grand Piano
+    #         name='Left Hand',
+    #         is_drum=False
+    #     )
+        
+    #     # Process events with clear staff separation
+    #     for event in events:
+    #         # Add lower register notes to left hand (bass clef)
+    #         bass_notes = sorted(n for n in event.notes if n < 60)  # Notes below middle C
+    #         for pitch in bass_notes:
+    #             note = pretty_midi.Note(
+    #                 velocity=event.velocity if event.velocity else 80,
+    #                 pitch=int(pitch),
+    #                 start=event.time,
+    #                 end=event.time + event.duration,
+    #             )
+    #             left_hand.notes.append(note)
+            
+    #         # Add higher register notes to right hand (treble clef)
+    #         treble_notes = sorted(n for n in event.notes if n >= 60)  # Notes from middle C up
+    #         for pitch in treble_notes:
+    #             note = pretty_midi.Note(
+    #                 velocity=event.velocity if event.velocity else 80,
+    #                 pitch=int(pitch),
+    #                 start=event.time,
+    #                 end=event.time + event.duration,
+    #             )
+    #             right_hand.notes.append(note)
+        
+    #     # Ensure each track has at least one note (to show both staves)
+    #     if not right_hand.notes:
+    #         # Add a silent note to show treble clef
+    #         right_hand.notes.append(
+    #             pretty_midi.Note(velocity=0, pitch=72, start=0, end=0.1)
+    #         )
+    #     if not left_hand.notes:
+    #         # Add a silent note to show bass clef
+    #         left_hand.notes.append(
+    #             pretty_midi.Note(velocity=0, pitch=48, start=0, end=0.1)
+    #         )
+        
+    #     # Sort notes in each track by time and pitch
+    #     right_hand.notes.sort(key=lambda x: (x.start, x.pitch))
+    #     left_hand.notes.sort(key=lambda x: (x.start, x.pitch))
+        
+    #     # Add tracks to MIDI file in correct order
+        
+    #     midi.instruments.append(left_hand)   # Track 1
+    #     midi.instruments.append(right_hand)  # Track 0
+
+    #     # # Add time signature and tempo
+    #     # ts = pretty_midi.TimeSignature(numerator=4, denominator=4, time=0)
+    #     # # midi.time_signatures.append(ts)
+        
+    #     # tempo = pretty_midi.Tempo(tempo=120, time=0)  # 120 BPM
+    #     # # midi.tempo_changes.append(tempo)
+        
+    #     # Write the MIDI file
+    #     midi.write(output_file)
 
 
 
-
+def validate_voice_separation(events: List[ChordEvent]):
+    """Helper function to validate voice separation in generated sequence."""
+    print("\nVoice Separation Analysis:")
+    
+    bass_notes = []
+    upper_notes = []
+    
+    for event in events:
+        if event.bass_notes:
+            bass_notes.extend(event.bass_notes)
+        if event.upper_notes:
+            upper_notes.extend(event.upper_notes)
+    
+    print(f"Bass notes range: [{min(bass_notes) if bass_notes else 'N/A'}, "
+          f"{max(bass_notes) if bass_notes else 'N/A'}]")
+    print(f"Upper notes range: [{min(upper_notes) if upper_notes else 'N/A'}, "
+          f"{max(upper_notes) if upper_notes else 'N/A'}]")
+    
+    # Check voice crossing
+    crossings = 0
+    for i in range(len(events)-1):
+        if events[i].bass_notes and events[i+1].bass_notes:
+            if max(events[i].bass_notes) > min(events[i+1].upper_notes):
+                crossings += 1
+    
+    print(f"Voice crossings detected: {crossings}")
 
 
 def main():
@@ -808,7 +1111,7 @@ def main():
     if args.mode == 'train':
         system.train(
             midi_folder= args.midi_folder,
-            num_epochs=10,
+            num_epochs=5,
             batch_size=32,
             learning_rate=0.001
         )
@@ -816,18 +1119,30 @@ def main():
     # Inference
     elif args.mode == 'generate':
         # Load checkpoint
-        system.load_checkpoint('model.pth', 'processor.pkl')
+        system.load_checkpoint(args.model_path, args.processor_path)
         
         # Generate
+        # generated_events = system.generate(
+        #     length=32,
+        #     temperature=0.8,
+        #     top_k=50,
+        #     top_p=0.9
+        # )
         generated_events = system.generate(
+            seed_sequence=[0] * 4,
             length=32,
-            temperature=0.8,
-            top_k=50,
-            top_p=0.9
+            temperature=0.7,
+            # min_bass_note=36,
+            # max_bass_note=59,
+            # min_upper_note=60,
+            # max_upper_note=84
         )
-        
+
+        # validate_voice_separation(generated_events)
+
         # Save to MIDI
-        system.save_midi(generated_events, "generated_music.mid")
+        # system.save_midi(generated_events, "generated_music.mid")
+        system.create_harmonic_midi(generated_events, args.output_path)
 
 if __name__ == "__main__":
     import argparse
@@ -843,11 +1158,11 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
 
-    # args.mode == 'train'
+    args.mode = 'generate' # 'train' # 'generate'
 
-    args.midi_folder = "./midi_dataset/piano_maestro-v1.0.0/2004/" #all_years/"
-    args.model_path = 'chordAware_transformer.pth'
-    args.processor_path = 'processor_transformer.pkl'
+    args.midi_folder = "../midi_dataset/piano_maestro-v1.0.0/all_years/"
+    args.model_path = './models_chord_transformer/checkpoint_epoch_5.pth'
+    args.processor_path = './models_chord_transformer/processor.pkl'
 
     
 

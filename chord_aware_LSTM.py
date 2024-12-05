@@ -943,17 +943,18 @@ def extract_chord_events_from_midi(midi_file: str) -> List[ChordEvent]:
 # Main training script
 def main():
 
-    mode =  'train'
+    mode ='inference' # 'train'
 
-    # Setup
-    midi_folder = "./midi_dataset/piano_maestro-v1.0.0/2004/" # all_years/"
-    midi_files = glob.glob(os.path.join(midi_folder, "*.mid")) + \
-                    glob.glob(os.path.join(midi_folder, "*.midi"))
-    print( len(midi_files) )
-    processor, dataloader = prepare_training_data(midi_files)
     
     if mode == 'train':
-        
+
+        # Paths to MIDI files    # Setup
+        midi_folder = "../midi_dataset/piano_maestro-v1.0.0/2004/" # all_years/"
+        midi_files = glob.glob(os.path.join(midi_folder, "*.mid")) + \
+                        glob.glob(os.path.join(midi_folder, "*.midi"))
+        print( len(midi_files) )
+        processor, dataloader = prepare_training_data(midi_files)
+                
         # Create model
         model_params = {
             'vocab_size': processor.vocab_size,
@@ -968,16 +969,16 @@ def main():
         trainer = HarmonicSequenceTrainer(processor, model_params)
         
         # Train
-        trainer.train(dataloader, num_epochs=10, learning_rate=0.001)
+        trainer.train(dataloader, num_epochs=1, learning_rate=0.001)
 
         
         # Save model
-        trainer.save_model('harmonic_model_attention.pth')
+        trainer.save_model('harmonic_model_chord_LSTM.pth')
     
 
     elif mode =='inference':
         # Paths to saved files
-        model_path = './models/harmonic_model_attention.pth'
+        model_path = './models/harmonic_model_chord_LSTM.pth'
 
         processor_path = './models/processor.pkl'
         

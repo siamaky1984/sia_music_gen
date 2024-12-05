@@ -906,11 +906,11 @@ def play_midi(midi_file_path):
 
 def main():
 
-    mode = 'train' #  'generate'
+    mode = 'generate' # 'train' #  'generate'
     # sequence_length =  50
-    midi_folder = "./midi_dataset/piano_maestro-v1.0.0/all_years/"
-    model_file = 'harmonic_model_attention.pth'
-    processor_file = 'processor.pkl'
+    midi_folder = "../midi_dataset/piano_maestro-v1.0.0/2004/" #all_years/"
+    model_file = 'models_LSTM_harmonic/harmonic_LSTM_attention.pth' # 'harmonic_model_attention.pth'
+    processor_file = 'models_LSTM_harmonic/processor_LSTM_harmonic.pkl'
     
     # Model parameters
     model_params = {
@@ -925,7 +925,7 @@ def main():
     train_params = {
         'batch_size': 8,      # Reduced batch size
         'sequence_length': 16,
-        'num_epochs': 10,
+        'num_epochs': 1,
         'learning_rate': 0.001
     }
     
@@ -1005,7 +1005,7 @@ def main():
         # Paths to saved files
         model_path = model_file
         processor_path = processor_file
-        output_path = 'generated_sequence.mid'
+        output_path = 'generated_harmonic_LSTM.mid'
         
         # Validate paths
         if not os.path.exists(model_path):

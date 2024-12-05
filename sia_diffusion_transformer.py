@@ -248,12 +248,12 @@ def post_process_sequence(sequence):
     return np.array(processed)
 
 
-mode = 'inference' #'train'
+mode = 'train'
 
 if mode == 'train':
 
     # Usage example
-    midi_folder = '../Midi_dataset/piano_maestro-v2.0.0/2004/'
+    midi_folder = '../midi_dataset/piano_maestro-v1.0.0/2004/'
     dataset = MIDIDataset(midi_folder)
     dataloader = DataLoader(dataset, batch_size=32, shuffle=True)
 
