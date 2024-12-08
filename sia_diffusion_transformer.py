@@ -69,19 +69,47 @@ class DiffusionTransformer(nn.Module):
         self.event_type_embedding = nn.Embedding(EVENT_TYPES, d_model)
         self.value_projection = nn.Linear(1, d_model)
         self.position_embedding = nn.Embedding(max_seq_len, d_model)
+
+        self.max_seq_len = max_seq_len
         
         encoder_layer = nn.TransformerEncoderLayer(
             d_model, 
             nhead, 
             dim_feedforward,
-            batch_first=True,
-            norm_first=True
+            batch_first=True
+            # norm_first=True
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers)
         
         self.fc_out = nn.Linear(d_model, 2)  # Output event type and value
 
-    def forward(self, x, t):
+    # def forward(self, x, t):
+    #     batch_size, seq_len, _ = x.shape
+    #     event_type = x[:, :, 0].long()
+    #     values = x[:, :, 1].unsqueeze(-1)
+        
+    #     event_type = torch.clamp(event_type, 0, EVENT_TYPES - 1)
+        
+    #     event_emb = self.event_type_embedding(event_type)
+    #     value_emb = self.value_projection(values)
+    #     pos_emb = self.position_embedding(torch.arange(seq_len, device=x.device))
+    #     pos_emb = pos_emb.unsqueeze(0).expand(batch_size, -1, -1)
+        
+    #     x = event_emb + value_emb + pos_emb
+        
+    #     t_emb = self.get_timestep_embedding(t, self.d_model)
+    #     t_emb = t_emb.unsqueeze(1).expand(-1, seq_len, -1)
+        
+    #     x = torch.cat([x, t_emb], dim=-1)
+        
+    #     x = nn.Linear(x.size(-1), self.d_model, device=x.device)(x)
+        
+    #     x = self.transformer(x)
+        
+    #     return self.fc_out(x)
+
+    # #### forward with context
+    def forward(self, x, t, context=None):
         batch_size, seq_len, _ = x.shape
         event_type = x[:, :, 0].long()
         values = x[:, :, 1].unsqueeze(-1)
@@ -90,13 +118,28 @@ class DiffusionTransformer(nn.Module):
         
         event_emb = self.event_type_embedding(event_type)
         value_emb = self.value_projection(values)
-        pos_emb = self.position_embedding(torch.arange(seq_len, device=x.device))
-        pos_emb = pos_emb.unsqueeze(0).expand(batch_size, -1, -1)
         
-        x = event_emb + value_emb + pos_emb
+        if context is not None:
+            context_len = context.size(1)
+            total_len = context_len + seq_len
+            pos_emb = self.position_embedding(torch.arange(total_len, device=x.device))
+            pos_emb = pos_emb.unsqueeze(0).expand(batch_size, -1, -1)
+            
+            context_event_type = context[:, :, 0].long()
+            context_values = context[:, :, 1].unsqueeze(-1)
+            context_event_emb = self.event_type_embedding(context_event_type)
+            context_value_emb = self.value_projection(context_values)
+            context_emb = context_event_emb + context_value_emb + pos_emb[:, :context_len]
+            
+            x = event_emb + value_emb + pos_emb[:, context_len:]
+            x = torch.cat([context_emb, x], dim=1)
+        else:
+            pos_emb = self.position_embedding(torch.arange(seq_len, device=x.device))
+            pos_emb = pos_emb.unsqueeze(0).expand(batch_size, -1, -1)
+            x = event_emb + value_emb + pos_emb
         
         t_emb = self.get_timestep_embedding(t, self.d_model)
-        t_emb = t_emb.unsqueeze(1).expand(-1, seq_len, -1)
+        t_emb = t_emb.unsqueeze(1).expand(-1, x.size(1), -1)
         
         x = torch.cat([x, t_emb], dim=-1)
         
@@ -104,7 +147,11 @@ class DiffusionTransformer(nn.Module):
         
         x = self.transformer(x)
         
+        if context is not None:
+            x = x[:, context_len:]  # Only predict for the non-context part
+        
         return self.fc_out(x)
+
 
     def get_timestep_embedding(self, timesteps, embedding_dim):
         half_dim = embedding_dim // 2
@@ -132,11 +179,11 @@ class DiffusionModel:
         return sqrt_alpha_bar.unsqueeze(-1).unsqueeze(-1) * x + sqrt_one_minus_alpha_bar.unsqueeze(-1).unsqueeze(-1) * epsilon, epsilon
 
     @torch.no_grad()
-    def sample(self, shape):
+    def sample(self, shape , context=None):
         x = torch.randn(shape, device=self.device)
         for t in reversed(range(len(self.betas))):
             t_tensor = torch.full((shape[0],), t, dtype=torch.long, device=self.device)
-            predicted_noise = self.model(x, t_tensor)
+            predicted_noise = self.model(x, t_tensor, context)
             alpha = self.alphas[t]
             alpha_bar = self.alpha_bars[t]
             beta = self.betas[t]
@@ -170,21 +217,31 @@ def sequence_to_midi(sequence, output_file):
     mid.tracks.append(track)
     
     current_time = 0
+    last_event_time = 0
+
     for event in sequence:
-        event_type, value = event
+        # event_type, value = event
+        event_type, note, time = event
+
         if event_type == 2:  # Time shift
             current_time += value
         else:
+            # Ensure time delta is non-negative
+            time_delta = max(0, int(time * mid.ticks_per_beat - last_event_time))
+            last_event_time = int(time * mid.ticks_per_beat)
+
             msg_type = 'note_on' if event_type == 0 else 'note_off'
-            note = int(value)
+            
             velocity = 64 if msg_type == 'note_on' else 0
-            track.append(Message(msg_type, note=note, velocity=velocity, time=int(current_time * mid.ticks_per_beat)))
-            current_time = 0
+            
+            # Create MIDI message with non-negative time
+            track.append(Message(msg_type, note=int(note), velocity=velocity, time=time_delta))
+        
     
     mid.save(output_file)
 
 
-def generate_midi(model_path, output_file, seq_len=512, num_sequences=8, context_size=256):
+def generate_midi(model_path, output_file, seq_len=64, num_sequences=8, context_size=128):
     # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
 
@@ -193,7 +250,7 @@ def generate_midi(model_path, output_file, seq_len=512, num_sequences=8, context
     # Extract the position embedding size from the checkpoint
     pos_embed_size = checkpoint['model_state_dict']['position_embedding.weight'].size(0)
     
-    model = DiffusionTransformer(max_seq_len=pos_embed_size).to(device)
+    model = DiffusionTransformer(max_seq_len=pos_embed_size + context_size).to(device)
     diffusion = DiffusionModel(model)
     
 
@@ -206,7 +263,7 @@ def generate_midi(model_path, output_file, seq_len=512, num_sequences=8, context
     context = None
     with torch.no_grad():
         for i in range(num_sequences):
-            generated = diffusion.sample((1, seq_len, 2))
+            generated = diffusion.sample((1, seq_len, 2), context)
             generated_sequence = generated[0].cpu().numpy()
             scaled_sequence = scale_to_midi_range(generated_sequence)
             full_sequence.append(scaled_sequence)
@@ -248,27 +305,28 @@ def post_process_sequence(sequence):
     return np.array(processed)
 
 
-mode = 'train'
+mode = 'inference' #'train'
 
 if mode == 'train':
 
     # Usage example
-    midi_folder = '../midi_dataset/piano_maestro-v1.0.0/2004/'
+    midi_folder = '../midi_dataset/piano_maestro-v1.0.0/all_years/'
     dataset = MIDIDataset(midi_folder)
     dataloader = DataLoader(dataset, batch_size=32, shuffle=True)
 
-    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
 
     model = DiffusionTransformer().to(device)
     diffusion = DiffusionModel(model)
 
     # Training loop
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
-    num_epochs = 2
+    num_epochs = 40
 
     for epoch in range(num_epochs):
         print('epoch', epoch)
+        context = None
         for batch in dataloader:
             batch = batch.to(device)
             optimizer.zero_grad()
@@ -278,7 +336,7 @@ if mode == 'train':
             noisy_batch, noise = diffusion.add_noise(batch, t)
             # print('>>>', noisy_batch.shape, t.shape, noise.shape)
 
-            predicted_noise = model(noisy_batch, t)
+            predicted_noise = model(noisy_batch, t, context)
             # print(predicted_noise.shape, noise.shape)
             
             loss = F.mse_loss(predicted_noise, noise)
