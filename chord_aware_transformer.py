@@ -1158,9 +1158,9 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
 
-    args.mode = 'generate' # 'train' # 'generate'
+    args.mode = 'train' # 'train' # 'generate'
 
-    args.midi_folder = "../midi_dataset/piano_maestro-v1.0.0/all_years/"
+    args.midi_folder = "../midi_dataset/piano_maestro/piano_maestro-v1.0.0/all_years/"
     args.model_path = './models_chord_transformer/checkpoint_epoch_5.pth'
     args.processor_path = './models_chord_transformer/processor.pkl'
 

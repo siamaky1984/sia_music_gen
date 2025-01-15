@@ -943,13 +943,13 @@ def extract_chord_events_from_midi(midi_file: str) -> List[ChordEvent]:
 # Main training script
 def main():
 
-    mode ='inference' # 'train'
+    mode ='train' # 'train'
 
     
     if mode == 'train':
 
         # Paths to MIDI files    # Setup
-        midi_folder = "../midi_dataset/piano_maestro-v1.0.0/2004/" # all_years/"
+        midi_folder = "../midi_dataset/piano_maestro/piano_maestro-v1.0.0/2004/" # all_years/"
         midi_files = glob.glob(os.path.join(midi_folder, "*.mid")) + \
                         glob.glob(os.path.join(midi_folder, "*.midi"))
         print( len(midi_files) )
@@ -973,14 +973,14 @@ def main():
 
         
         # Save model
-        trainer.save_model('harmonic_model_chord_LSTM.pth')
+        trainer.save_model('./models_LSTM_harmonic/harmonic_model_chord_LSTM.pth')
     
 
     elif mode =='inference':
         # Paths to saved files
-        model_path = './models/harmonic_model_chord_LSTM.pth'
+        model_path = './models_LSTM_harmonic/harmonic_model_chord_LSTM.pth'
 
-        processor_path = './models/processor.pkl'
+        processor_path = './models_LSTM_harmonic/processor.pkl'
         
         output_path = 'generated_sequence.mid'
 

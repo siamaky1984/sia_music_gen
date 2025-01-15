@@ -906,9 +906,9 @@ def play_midi(midi_file_path):
 
 def main():
 
-    mode = 'generate' # 'train' #  'generate'
+    mode = 'train' # 'train' #  'generate'
     # sequence_length =  50
-    midi_folder = "../midi_dataset/piano_maestro-v1.0.0/2004/" #all_years/"
+    midi_folder = "../midi_dataset/piano_maestro/piano_maestro-v1.0.0/2004/" #all_years/"
     model_file = 'models_LSTM_harmonic/harmonic_LSTM_attention.pth' # 'harmonic_model_attention.pth'
     processor_file = 'models_LSTM_harmonic/processor_LSTM_harmonic.pkl'
     

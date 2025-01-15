@@ -501,11 +501,11 @@ def plot_piano_roll(pm, start_pitch, end_pitch, fs=100):
 
 def main():
     # Configuration
-    mode = 'generate' # 'train' #  'generate'
-    sequence_length =  50
-    midi_folder = "./midi_dataset/piano_maestro-v1.0.0/all_years/"
-    model_file = 'model.pth'
-    processor_file = 'processor.pkl'
+    mode =  'generate' #  'generate'
+    sequence_length =  150
+    midi_folder = "../midi_dataset/piano_maestro/piano_maestro-v1.0.0/all_years/" 
+    model_file = './models/LSTM/model_LSTM.pth'
+    processor_file = './models/LSTM/processor_LSTM.pkl'
     
     # Model parameters
     model_params = {
@@ -611,7 +611,7 @@ def main():
         # seed_sequence = [random.randint(0, processor.vocab_size-1) for _ in range(sequence_length_gen)]
         
         # Option 2: If you have a MIDI file to use as seed
-        midi_seed_file = "./midi_dataset/mond_1.mid"
+        midi_seed_file = "./midi_test/mond_1.mid"
         seed_events = processor.extract_events(midi_seed_file)
         seed_sequence = processor.events_to_indices(seed_events)[:sequence_length_gen]
         

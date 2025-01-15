@@ -28,7 +28,7 @@ class EnhancedMIDIDataset(Dataset):
         
         # Extract notes and chords
         notes = []
-        for element in midi.flat:
+        for element in midi.flatten():
             if isinstance(element, note.Note):
                 notes.append(element.pitch.midi)
             elif isinstance(element, chord.Chord):
@@ -282,7 +282,7 @@ class EnhancedDiscreteDiffusion:
         self.device = device
         self.corruption_rates = torch.linspace(0, 0.99, n_steps).to(device)
         # self.model = TemporalTransformerDenoiser(vocab_size=vocab_size).to(device)
-        self.model = PolyphonicTransformerDenoiser(device=device).to(device)
+        self.model = PolyphonicTransformerDenoiser().to(device)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-4)
 
         self.sequence_length = sequence_length
@@ -290,22 +290,33 @@ class EnhancedDiscreteDiffusion:
     def corrupt_sequence(self, sequence, step):
         """Add noise to the sequence based on current step"""
         corrupted = sequence.clone()
+        
+        
+        
+        # ## for melody only 
         # batch_size, seq_length = corrupted.shape
-
-        batch_size, seq_length, num_notes = corrupted.shape
-
-        # Reshape corruption rates to match sequence shape
-        # [batch_size] -> [batch_size, 1] -> [batch_size, seq_length]
+        # ## Reshape corruption rates to match sequence shape
+        # #[batch_size] -> [batch_size, 1] -> [batch_size, seq_length]
         # corruption_rate = self.corruption_rates[step][:, None].expand(-1, seq_length)
+        # # Generate random mask matching the sequence shape
+        # mask = (torch.rand_like(corrupted.float()) < corruption_rate)
 
+
+
+        ### for polyphonic 
+        batch_size, seq_length, num_notes = corrupted.shape
         corruption_rate = self.corruption_rates[step][:, None, None].expand(batch_size, seq_length, num_notes)
+        # mask = (torch.rand_like(corrupted.float()) < self.corruption_rates[step].to(self.device) )
 
-        # mask = (torch.rand_like(corrupted.float()) < self.corruption_rates[step].to(corrupted.device) )
+        # Generate random mask
+        mask = (torch.rand_like(corrupted) < corruption_rate)
 
-        # Generate random mask matching the sequence shape
-        mask = (torch.rand_like(corrupted.float()) < corruption_rate)
 
-        random_notes = torch.randint_like(corrupted, 0, self.vocab_size)
+        # random_notes = torch.randint_like(corrupted, 0, self.vocab_size)
+
+        ### polphonic
+        random_notes = torch.rand_like(corrupted) # > 0.9  # Random sparse activations
+
         corrupted[mask] = random_notes[mask]
 
         return corrupted
@@ -315,6 +326,8 @@ class EnhancedDiscreteDiffusion:
 
         context = batch['context'].to(self.device)
         target = batch['target'].to(self.device)
+
+        print('target size', target.size())
         
         # Randomly select timesteps
         # t = torch.randint(0, self.n_steps, (target.size(0),), device=self.device)
@@ -330,10 +343,10 @@ class EnhancedDiscreteDiffusion:
         pred = self.model(context, corrupted_target, t)
         
         # Calculate loss
-        # loss = F.cross_entropy(pred.view(-1, self.vocab_size), target.view(-1))
+        loss = F.cross_entropy(pred.view(-1, self.vocab_size), target.view(-1, self.vocab_size))
 
-        # Calculate loss
-        loss = F.binary_cross_entropy_with_logits(pred, target)
+        # Calculate loss polyphonic
+        # loss = F.binary_cross_entropy_with_logits(pred, target)
         
         self.optimizer.zero_grad()
         loss.backward()
@@ -454,59 +467,63 @@ class EnhancedDiscreteDiffusion:
         
     #     return sequence.cpu().numpy()[0], context.cpu().numpy()[0]
     
-    # @torch.no_grad()
-    # def generate(self, context=None, sequence_length=16, temperature=1.0):
-    #     """Generate new sequence with context"""
-    #     self.model.eval()
-        
-    #     if context is None:
-    #         context = torch.zeros((1, sequence_length * 4, 128)).to(self.device)
-    #     else:
-    #         context = context.to(self.device)
-        
-    #     # Start with random sequence
-    #     sequence = torch.rand((1, sequence_length, 128)).to(self.device) 
-        
-    #     # Gradually denoise
-    #     for step in reversed(range(self.n_steps)):
-    #         pred = self.model(context, sequence, torch.tensor([step], device=self.device))
-    #         pred = torch.sigmoid(pred / temperature)
-    #         sequence = (pred > 0.5).float()
-        
-    #     return sequence.cpu().numpy()[0], context.cpu().numpy()[0]
-
     @torch.no_grad()
     def generate(self, context=None, sequence_length=16, temperature=1.0):
         """Generate new sequence with context"""
         self.model.eval()
         
+        # Debug prints for initial setup
+        print("Starting generation...")
+
         if context is None:
-            # Initialize with small random values instead of binary
-            context = torch.rand((1, sequence_length * 4, 128)).to(self.device) * 0.1
+            context = torch.zeros((1, sequence_length * 4, 128)).to(self.device)
         else:
             context = context.to(self.device)
         
-        # Initialize sequence with small random values
-        sequence = torch.rand((1, sequence_length, 128)).to(self.device) * 0.1
+        print(f"Context stats - min: {context.min().item():.4f}, max: {context.max().item():.4f}")
+        
+
+        # Start with random sequence
+        sequence = torch.ones((1, sequence_length, 128)).to(self.device)* 0.01 #  > 0.9
         
         # Gradually denoise
         for step in reversed(range(self.n_steps)):
-            # Get model prediction
+            if torch.isnan(sequence).any():
+                print(f"NaN detected in sequence at step {step}")
+                break
+    
             pred = self.model(context, sequence, torch.tensor([step], device=self.device))
+
+
+            # Clip predictions to prevent extreme values
+            pred = torch.clamp(pred, -20, 20)
             
-            # Apply sigmoid to get probabilities
+            # Apply sigmoid with temperature
+            temp = max(0.1, temperature)  # Prevent division by zero
+
             pred = torch.sigmoid(pred / temperature)
-            
-            # Update sequence with predicted probabilities
+
+            # sequence = (pred > 0.5).float()
             sequence = pred
+
+            # Print stats every 100 steps
+            if step % 100 == 0:
+                print(f"Step {step} stats:")
+                print(f"Sequence - min: {sequence.min().item():.4f}, max: {sequence.max().item():.4f}")
             
-            # Optional: Add some noise for earlier steps
-            if step > 0:
-                noise_scale = 0.1 * (step / self.n_steps)
-                sequence = sequence + torch.randn_like(sequence) * noise_scale
-                sequence = torch.clamp(sequence, 0, 1)
+
+        # Final checks and cleanup
+        sequence = torch.nan_to_num(sequence, 0.0)  # Replace any NaN with 0
+        sequence = torch.clamp(sequence, 0, 1)      # Ensure valid range
         
+        print("Generation complete")
+        print(f"Final sequence stats - min: {sequence.min().item():.4f}, max: {sequence.max().item():.4f}")
+        
+
         return sequence.cpu().numpy()[0], context.cpu().numpy()[0]
+    
+        # return sequence, context 
+
 
 
 def train_and_save(midi_folder, num_epochs=100, save_interval=10):
@@ -550,9 +567,35 @@ def generate_from_checkpoint(checkpoint_path, num_sequences=8, sequence_length=3
     # Generate sequences
     # generated_notes = generate_midi_sequence(diffusion, num_sequences, sequence_length)
 
-    generated_notes = generate_polyphonic_midi(diffusion, num_sequences, sequence_length, output_file="generated.mid")
+    context = None 
+    all_sequences = []
+
+    for i in range(num_sequences):
+        print(f"\nGenerating sequence {i+1}/{num_sequences}")
+        
+        # Generate new sequence
+        sequence, context = diffusion.generate(
+            context=context,
+            sequence_length=16,
+            temperature=1.0
+        )
     
-    return generated_notes
+
+        all_sequences.append(sequence)
+        context = torch.tensor(sequence).unsqueeze(0)
+    
+    # Save this sequence
+    output_file = f"generated_sequence.mid"
+    generate_polyphonic_midi(all_sequences, output_file)
+
+    # Optionally combine all sequences into one file
+    if num_sequences > 1:
+        combined_sequence = np.concatenate(all_sequences, axis=0)
+        generate_polyphonic_midi(combined_sequence, "combined_sequence.mid")
+    
+
+
+    return all_sequences
 
 
 
@@ -587,66 +630,15 @@ def generate_midi_sequence(diffusion_model, num_sequences=8, sequence_length= 32
     return all_notes
 
 
-def generate_polyphonic_midi(diffusion_model, num_sequences=8, sequence_length= 32, output_file="generated.mid"):
-    all_notes = []
-    context = None
-    
-    for i in range(num_sequences):
-        # Generate new sequence using previous context
-        new_sequence, context = diffusion_model.generate(context=context,  sequence_length=sequence_length)
-        all_notes.extend(new_sequence)
-        
-        print('context', len(context))
-        print(len(all_notes))
-
-        # Update context for next generation
-        # Use the last portion of combined context and new sequence
-        full_sequence = np.concatenate([context, new_sequence])
-        context_length = len(context)
-        context = torch.tensor(full_sequence[-context_length:]).unsqueeze(0)
-    
-    s = stream.Stream()
-    
-    for step, step_notes in enumerate(full_sequence):
-        # Get indices where probability exceeds threshold
-        active_notes = np.where(step_notes > 0.5)[0]
-        print(f"Step {step}, Active notes: {active_notes}")  # Debug print
-        
-        if len(active_notes) > 0:
-            # If multiple notes, create a chord
-            if len(active_notes) > 1:
-                c = chord.Chord([int(n) for n in active_notes])
-                c.quarterLength = 0.5
-                s.append(c)
-            # If single note
-            else:
-                n = note.Note(int(active_notes[0]))
-                n.quarterLength = 0.5
-                s.append(n)
-        else:
-            # Rest if no notes
-            r = note.Rest()
-            r.quarterLength = 0.5
-            s.append(r)
-    
-    s.write('midi', fp=output_file)
-
-
-
 # def generate_polyphonic_midi(sequence, output_file="generated.mid"):
-#     """
-#     Convert generated sequence to MIDI file
-#     sequence: numpy array of shape [sequence_length, 128]
-#     """
-#     print(f"Sequence shape: {sequence.shape}")  # Debug print
-#     print(f"Max value: {np.max(sequence)}, Min value: {np.min(sequence)}")  # Check value range
-    
+#     """Convert multi-hot encoded sequence to MIDI file"""
 #     s = stream.Stream()
     
-#     for step, step_notes in enumerate(sequence):
-#         # Get indices where probability exceeds threshold
-#         active_notes = np.where(step_notes > 0.5)[0]
-#         print(f"Step {step}, Active notes: {active_notes}")  # Debug print
+#     for step, notes in enumerate(sequence):
+#         # Get active notes (where probability > threshold)
+#         # active_notes = torch.where(notes > 0.5)[0].cpu().numpy()
+
+#         active_notes = np.where( notes> 0.5)[0]
         
 #         if len(active_notes) > 0:
 #             # If multiple notes, create a chord
@@ -666,6 +658,57 @@ def generate_polyphonic_midi(diffusion_model, num_sequences=8, sequence_length= 
 #             s.append(r)
     
 #     s.write('midi', fp=output_file)
+
+
+def generate_polyphonic_midi(sequences, output_file="generated.mid"):
+    """
+    Convert numpy array of note probabilities to MIDI file
+    Args:
+        sequence: numpy array of shape [sequence_length, 128] with values between 0 and 1
+        output_file: path to save the MIDI file
+    """
+    from music21 import stream, note, chord
+        
+    print(f"\nGenerating MIDI file: {output_file}")
+
+    
+    s = stream.Stream()
+    total_notes = 0
+
+    # Process each sequence
+    for seq_idx, sequence in enumerate(sequences):
+        # Replace any NaN values and ensure values are in [0,1]
+        sequence = np.nan_to_num(sequence, 0.0)
+        sequence = np.clip(sequence, 0, 1)
+
+        print(f"Sequence shape: {sequence.shape}")
+        print(f"Value range: {sequence.min():.4f} to {sequence.max():.4f}")
+    
+        for step, step_notes in enumerate(sequence):
+            # Get notes above threshold
+            active_notes = np.where(step_notes > 0.3)[0]
+            total_notes += len(active_notes)
+            
+            if len(active_notes) > 0:
+                # Create chord if multiple notes
+                if len(active_notes) > 1:
+                    c = chord.Chord([int(n) for n in active_notes])
+                    c.quarterLength = 0.5
+                    s.append(c)
+                # Create single note
+                else:
+                    n = note.Note(int(active_notes[0]))
+                    n.quarterLength = 0.5
+                    s.append(n)
+            else:
+                # Add rest if no notes
+                r = note.Rest()
+                r.quarterLength = 0.5
+                s.append(r)
+    
+    print(f"Total notes in sequence: {total_notes}")
+    s.write('midi', fp=output_file)
+
 
 
 def main():
@@ -703,15 +746,15 @@ def main():
                        help='Number of sequences to generate')
 
     args = parser.parse_args()
-    args.mode = 'generate' # 'train'
+    args.mode = 'train'
     args.checkpoint = './checkpoints_poly/diffusion_model_poly_epoch50_20241206_185448.pt'
-    args.midi_folder ='../midi_dataset/piano_maestro-v1.0.0/all_years/'
+    args.midi_folder = '../midi_dataset/piano_maestro/piano_maestro-v1.0.0/all_years/'
    
 
     if args.mode == 'train':
         if not args.midi_folder:
             raise ValueError("midi_folder must be specified for training")
-        checkpoint_path = train_and_save(args.midi_folder, num_epochs = 50)
+        checkpoint_path = train_and_save(args.midi_folder, num_epochs = 10)
         print(f"Training complete. Model saved to {checkpoint_path}")
     
     elif args.mode == 'generate':
@@ -721,7 +764,7 @@ def main():
             args.checkpoint, 
             num_sequences=args.num_sequences
         )
-        # print(f"Generated {len(generated_notes)} notes")
+        print(f"Generated {len(generated_notes)} notes")
 
 if __name__ == "__main__":
     main()
