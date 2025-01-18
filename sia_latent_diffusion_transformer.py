@@ -900,7 +900,7 @@ class DiffusionModel:
 
 
 class LatentDiffusionTransformer(nn.Module):
-    def __init__(self, latent_dim=64, d_model=512, nhead=8, num_layers=6):
+    def __init__(self, latent_dim=64, d_model=512, nhead=8, num_layers=6, max_seq_len=32):
         super().__init__()
         self.latent_dim = latent_dim
         self.d_model = d_model
@@ -908,6 +908,10 @@ class LatentDiffusionTransformer(nn.Module):
         self.num_layers = num_layers
         
         self.latent_projection = nn.Linear(latent_dim, d_model)
+
+        # Position embeddings for sequence of bars
+        self.pos_embedding = nn.Parameter(torch.randn(1, max_seq_len, d_model))
+        
         
         encoder_layer = nn.TransformerEncoderLayer(
             d_model, 
@@ -920,9 +924,19 @@ class LatentDiffusionTransformer(nn.Module):
         self.output_projection = nn.Linear(d_model, latent_dim)
 
     def forward(self, x, t):
-        x = self.latent_projection(x)
+        # x shape: [batch_size, num_bars, latent_dim]
+        batch_size, num_bars, _ = x.shape
+        
+
+        x = self.latent_projection(x) # [batch_size, num_bars, d_model]
+
+        # Add positional embeddings
+        x = x + self.pos_embedding[:, :num_bars, :]
+
         t_emb = self.get_timestep_embedding(t, self.d_model)
-        t_emb = t_emb.unsqueeze(1).expand(-1, x.size(1), -1)
+        # t_emb = t_emb.unsqueeze(1).expand(-1, x.size(1), -1)
+        time_emb = time_emb.unsqueeze(1).expand(-1, num_bars, -1)  # [batch_size, num_bars, d_model]
+
         x = x + t_emb
         x = self.transformer(x)
         return self.output_projection(x)
@@ -977,9 +991,21 @@ def train_latent_diffusion(transformer, vae, dataloader, num_epochs=100, device=
             optimizer.zero_grad()
             batch = batch.to(device)
             
-            # Encode batch to latent space using pre-trained VAE
+            # ###old way
+            # # Encode batch to latent space using pre-trained VAE
+            # with torch.no_grad():
+            #     latent_batch = vae.encode(batch)
+
+
+            # Encode each bar in the sequence with VAE
             with torch.no_grad():
-                latent_batch = vae.encode(batch)
+                # Let's say batch shape is [batch_size, num_bars, bar_seq_len, feature_dim]
+                B, N, S, F = batch.shape
+                batch_flat = batch.view(-1, S, F)  # Flatten batch and num_bars
+                latent_flat = vae.encode(batch_flat)  # Encode all bars
+                latent_batch = latent_flat.view(B, N, -1)  # Reshape back to [batch_size, num_bars, latent_dim]
+            
+
             
             # Add noise and predict
             t = torch.randint(0, 1000, (batch.size(0),), device=device)
